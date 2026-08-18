@@ -30,6 +30,21 @@ an empty edit holds a track blank so one that starts late stays in sync, and a
 trim starts playback partway in — which is what cancels the display offset a
 reordered stream begins with. A track given no edits writes no `edts` box, and
 that absence says the same thing as an edit that plays everything.
+`newMatroskaWriter` writes Matroska and WebM: an EBML header, a segment with
+Info and Tracks, a cluster per keyframe, and a Cues index. Two things do not
+carry across from an MP4 unchanged, and both are silent when they go wrong. A
+block's timestamp is when its frame is **shown**, where ISO base media stores
+when it is decoded — so a composition offset is added in rather than dropped,
+or a reordered stream plays out of order. And an AAC track's private data is
+the AudioSpecificConfig, not the whole `esds`; a config still labelled `esds`
+is refused rather than written, since ffmpeg handed the descriptor tree drops
+the track and leaves a file that looks fine.
+
+An edit list has no Matroska equivalent, so what one says is applied to the
+timestamps instead: a trim shifts them back, an empty edit forward. On the
+audio of a file with encoder priming that puts the first block before zero,
+which is what ffmpeg's own muxer writes for the same input.
+
 `editList` reads one back, which a remux needs: a track whose edit list is
 dropped plays at a different time from the one it was written to play at, and
 that shows up as sound and picture drifting apart rather than as a malformed
@@ -60,7 +75,7 @@ may be decoded here without that reservation.
 | Container | Limitations |
 |---|---|
 | MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
-| Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements, and the coded bytes of any frame by walking the Clusters. No keyframe index — Cues would give one. |
+| Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements, and the coded bytes of any frame by walking the Clusters. No keyframe index — Cues would give one. `newMatroskaWriter` writes the format as well as reads it. |
 | AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`, and the coded bytes of any chunk by walking `movi`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags. |
 | MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps, and the coded bytes of any access unit by reassembling its PES packets. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
 | Ogg (OGV) | Streams and codecs from each one's first packet, with the picture size and frame rate the identification header carries. Duration is the frame count over that rate, and a packet that spans pages is reassembled to give the coded bytes. VP8 is covered by a fixture; the Theora path is written from the specification, because no encoder here produces one. |

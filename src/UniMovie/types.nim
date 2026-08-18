@@ -16,6 +16,11 @@ const
   MaxSamples* = 1 shl 24
     ## Sixteen million coded samples is many hours of video. A sample table
     ## claiming more is refused rather than allocated.
+  MaxWriterTracks* = 8
+    ## More than a muxer built for a camera or a renderer needs. A caller
+    ## asking for more is refused rather than allocated for. Here rather than
+    ## beside either writer, because both bound themselves by it and two copies
+    ## would be free to drift apart.
   MaxDimension* = 1_000_000
     ## Past any real frame. A header claiming more is refused rather than
     ## believed, which is what stops a corrupt file from being reported as an
@@ -98,6 +103,34 @@ type
     mediaTime*: int64
       ## Where in the media this edit starts, in the **track's** timescale, or
       ## -1 for an empty edit that plays nothing.
+
+  TrackParams* = object
+    ## What a track is, before any sample of it exists.
+    kind*: TrackKind
+    codec*: string
+      ## The four-character code the sample entry is named after — `avc1`,
+      ## `hvc1`, `av01`, `mp4a`, `alac`. It is what a reader reports and what a
+      ## decoder backend is registered under, so it must match the bytes.
+    timescale*: int
+      ## Units per second every timestamp of this track is counted in. A video
+      ## track usually takes the frame rate times a small factor so that a
+      ## variable frame interval stays exact; audio takes the sample rate.
+    width*, height*: int ## pixels; video only
+    channels*: int ## audio only
+    sampleRate*: int ## audio only, in hertz
+    configKind*: string
+      ## The four-character name of the codec configuration box inside the
+      ## sample entry — `avcC` for H.264, `hvcC` for HEVC, `av1C` for AV1,
+      ## `esds` for AAC, `alac` for Apple Lossless. Empty writes no such box,
+      ## which suits a codec that needs none.
+    config*: string
+      ## That box's payload, exactly as the encoder produced it. Never parsed
+      ## here: a parameter set is the decoder's business, and copying it
+      ## unexamined is what keeps this a muxer.
+    edits*: seq[Edit]
+      ## The track's edit list, or empty for none — which is what a track whose
+      ## media starts at zero and plays through wants, and writes no `edts` box
+      ## at all.
 
   Movie* = object
     ## Everything a probe reports about a file.
