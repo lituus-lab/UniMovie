@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 lituus-lab
-# UniMovie — reference scaffold for the lituus-lab Uni* family.
+# UniMovie — demultiplexing for video containers.
 
 version       = "0.1.0"
 author        = "lituus-lab"
@@ -145,3 +145,9 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   exec merge & " --output-file lcov.info --quiet"
   exec "genhtml lcov.info --output-directory coverage --legend --quiet"
   exec "lcov --summary lcov.info"
+
+task bench, "Probe timings against ffprobe (release; not in the default gate)":
+  exec "nim c -r -d:release --path:src --hints:off -o:build/bench bench/bench_probe.nim"
+
+task benchReadme, "Run the benchmarks and splice their output into bench/README.md":
+  exec "nim c -r --path:src --hints:off -o:build/bench_readme bench/export_readme.nim"

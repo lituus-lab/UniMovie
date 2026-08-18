@@ -29,6 +29,16 @@ may be decoded here without that reservation.
 | MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
 | Ogg (OGV) | Streams and codecs from each one's first packet, with the picture size and frame rate the identification header carries. Duration is the frame count over that rate. VP8 is covered by a fixture; the Theora path is written from the specification, because no encoder here produces one. |
 
+`sampleCount` of 0 and an empty `keyframes` mean *not reported for this
+container*, never *empty*: only ISO base media carries a sync-sample table, and
+only it and AVI and Ogg count samples at all. A caller testing for an empty file
+should look at the duration.
+
+`sampleCount` of 0 and an empty `keyframes` mean *not reported for this
+container*, never *empty*: only ISO base media carries a sync-sample table, and
+only it, AVI and Ogg count samples at all. A caller testing whether a file holds
+anything should look at the duration.
+
 Codec identifiers are reported as the four-character codes MP4 uses, whichever
 container they came from: a Matroska `V_MPEG4/ISO/AVC` reads as `avc1`, so a
 caller registers one backend per codec rather than one per container. An
@@ -47,6 +57,51 @@ and it does so for that one codec.
 `ffprobe` reports the same transformation matrix counting anticlockwise, so a
 file it calls `rotation=90` reads here as 270 degrees. Both describe the same
 matrix; anything migrating off `ffprobe` has to negate.
+
+## What's inside
+
+- **What a demuxer reports** — `src/UniMovie/types.nim`. One shape every
+  container reader produces: tracks with a kind, a codec, a timescale, a
+  duration, and — for video — dimensions, rotation and a keyframe index.
+- **ISO base media** — `src/UniMovie/isobmff.nim`. MP4, MOV, M4V and 3GP,
+  including the sample tables that give per-sample access.
+- **EBML** — `src/UniMovie/matroska.nim`. Matroska and WebM, which are one
+  format under two doc types.
+- **RIFF** — `src/UniMovie/avi.nim`. AVI, little-endian, from 1992.
+- **Transport streams** — `src/UniMovie/mpegts.nim`. TS, M2TS and MTS, found by
+  the rhythm of their sync bytes because the format has no magic number.
+- **Ogg** — `src/UniMovie/ogg.nim`. Pages into logical streams, each identified
+  by its first packet.
+- **Dispatch** — `src/UniMovie/probe.nim` names a container from its bytes and
+  reads it; `src/UniMovie/c_api.nim` is the same library in C.
+
+## The Uni* family
+
+UniMovie is a leaf of `lituus-lab`'s `Uni*` family: a set of Nim libraries,
+each with a C ABI and a Python binding, unified by a shared dependency graph and
+documentation and testing conventions. See
+[lituus-lab/.github](https://github.com/lituus-lab/.github) for the family's
+purpose and philosophy. It depends on no other engine — demultiplexing is byte
+handling, and a consumer cataloguing a media library should not link a numeric
+stack to read a header.
+
+## Provenance & development
+
+Written from the published formats: ISO 14496-12 for ISO base media, the
+Matroska specification, ISO 13818-1 for transport streams, RFC 3533 for Ogg,
+and the Windows `BITMAPINFOHEADER` layout for AVI. No code is ported from
+another implementation, and `NOTICE` records the one bundled dependency.
+
+Development used LLM/agent assistance extensively, on the terms described
+below. The git history is short and linear as a result; the formats it reads
+have been stable for decades.
+
+## Benchmarks
+
+`nimble bench` measures what a probe costs against spawning `ffprobe` for the
+same answer; it is not part of the gate. `nimble benchReadme` runs it and writes
+the numbers into [bench/README.md](bench/README.md), tagged by machine, so
+nothing there is retyped by hand.
 
 ## Layout
 
@@ -100,23 +155,6 @@ The same gates run locally with pre-commit: `pip install pre-commit && pre-commi
 
 `docs` publishes to GitHub Pages only from a public repo — the template itself is
 private, so that deploy stays skipped here and turns itself on in the engines.
-
-## Clone map
-
-Cloned from UniTemplate: the family scaffold, with its tasks, CI matrix, ADRs
-and the C ABI + Python conventions already in place.
-
-| Template | Clone | Example |
-|---|---|---|
-| `UniMovie` | `UniFoo` | `UniAccurate`, `UniMath`, `UniGeom` |
-| `unimovie` | `unifoo` | `uniaccurate`, `unimath`, `unigeom` |
-| `ut_` | `<short>_` | `ua_`, `um_`, `ulin_`, `ug_` |
-| `libUniMovie` | `libUniFoo` | `libUniMusic` |
-| `UniMovie.h` | `UniFoo.h` | `UniMusic.h` |
-
-Files to rename: `UniMovie.nimble`, `src/UniMovie.nim`, `src/UniMovie/`,
-`include/UniMovie.h`, `tests/c/test_unimovie.c` (+ its Makefile target),
-`py/unimovie/`. Then update `LICENSE`/`NOTICE` copyright and the ADR titles.
 
 ## AI-assisted contributions
 
