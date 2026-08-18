@@ -7,7 +7,7 @@
 ## Identical pixels mean the sample framing, the timing tables and the codec
 ## configuration all survived — none of which a structural check alone proves.
 import std/[unittest, os, osproc, strutils]
-import UniImage/exif/isobmff as boxlayer
+import UniImage/isobmff as boxlayer
 import UniMovie
 
 const Fixtures = currentSourcePath.parentDir / "fixtures"
