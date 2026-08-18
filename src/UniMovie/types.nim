@@ -70,34 +70,54 @@ type
     tracks*: seq[Track]
 
 func durationSeconds*(track: Track): float {.contractual.} =
-  ## The track's playing time. Zero when the container declared no duration,
-  ## which is legal for a stream that was still being written.
-  require:
-    track.timescale > 0
+  ## The track's playing time in seconds, or 0 when the container declared no
+  ## timescale.
+  ##
+  ## Checked in the body rather than by a precondition: the timescale comes from
+  ## the file, so a header that omits it is a fact about the file and not a
+  ## caller's mistake. A precondition would raise in debug and divide by zero in
+  ## release, which is the worst of both.
+  ensure:
+    result >= 0.0
   body:
-    float(track.duration) / float(track.timescale)
+    if track.timescale <= 0: 0.0
+    else: float(track.duration) / float(track.timescale)
 
 func durationSeconds*(movie: Movie): float {.contractual.} =
-  ## The movie's playing time, from its own header rather than from the longest
-  ## track: a file may declare a duration that outlasts its media, and the
-  ## header is what a player honours.
-  require:
-    movie.timescale > 0
+  ## The movie's playing time in seconds, from its own header rather than from
+  ## the longest track: a file may declare a duration that outlasts its media,
+  ## and the header is what a player honours. Zero when the header is missing —
+  ## see the track overload for why that is not a precondition.
+  ensure:
+    result >= 0.0
   body:
-    float(movie.duration) / float(movie.timescale)
+    if movie.timescale <= 0: 0.0
+    else: float(movie.duration) / float(movie.timescale)
 
-func videoTrack*(movie: Movie): int =
+func videoTrack*(movie: Movie): int {.contractual.} =
   ## The index of the first video track, or -1 when there is none. First rather
   ## than largest: containers list the primary presentation first, and a file
   ## with a thumbnail track would otherwise report the thumbnail.
-  result = -1
-  for index, track in movie.tracks:
-    if track.kind == tkVideo: return index
+  ##
+  ## The postcondition is what makes the -1 convention safe: any other result
+  ## indexes `tracks`, so a caller needs one comparison and no bounds check.
+  ensure:
+    result == -1 or result in 0 ..< movie.tracks.len
+  body:
+    result = -1
+    for index, track in movie.tracks:
+      if track.kind == tkVideo: return index
 
-func audioTrack*(movie: Movie): int =
-  ## The index of the first audio track, or -1 when there is none.
-  result = -1
-  for index, track in movie.tracks:
-    if track.kind == tkAudio: return index
+func audioTrack*(movie: Movie): int {.contractual.} =
+  ## The index of the first audio track, or -1 when there is none. As above,
+  ## any result other than -1 indexes `tracks`.
+  ensure:
+    result == -1 or result in 0 ..< movie.tracks.len
+  body:
+    result = -1
+    for index, track in movie.tracks:
+      if track.kind == tkAudio: return index
+
+
 
 

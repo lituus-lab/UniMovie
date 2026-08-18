@@ -9,7 +9,7 @@
 ## never clamped into range.
 
 import ./types
-import ./isobmff
+import ./probe
 
 const UniMovieVersion = "0.1.0"
 
@@ -30,16 +30,25 @@ proc umov_last_error(): cstring {.exportc, cdecl, dynlib.} =
   cstring(lastError)
 
 proc umov_probe(path: cstring; trackCount, videoIndex, audioIndex: ptr cint;
-                durationSeconds: ptr cdouble): cint
+                durationSeconds: ptr cdouble; format: ptr array[16, char]): cint
     {.exportc, cdecl, dynlib.} =
   ## Shape of a container: how many tracks, which is the first video and audio
-  ## one (-1 when absent), and the movie's playing time in seconds.
+  ## one (-1 when absent), the playing time in seconds, and the container's own
+  ## name — "mp4", "mov", "matroska", "webm", "avi".
+  ##
+  ## `format` receives at most fifteen characters and a terminating zero, so
+  ## the caller supplies sixteen bytes. Pass NULL for it when the name is not
+  ## wanted; every other argument is required.
   if path == nil or trackCount == nil or videoIndex == nil or
       audioIndex == nil or durationSeconds == nil:
-    lastError = "every argument must be non-null"
+    lastError = "every argument but format must be non-null"
     return cint(umovErrArg)
   try:
-    let movie = readMovieFile($path)
+    let movie = probe.readMovieFile($path)
+    if format != nil:
+      for position in 0 .. 15: format[][position] = '\0'
+      for position in 0 ..< min(15, movie.format.len):
+        format[][position] = movie.format[position]
     trackCount[] = cint(movie.tracks.len)
     videoIndex[] = cint(movie.videoTrack)
     audioIndex[] = cint(movie.audioTrack)
@@ -75,7 +84,7 @@ proc umov_track(path: cstring; index: cint; kind: ptr cint;
     lastError = "track index must not be negative"
     return cint(umovErrArg)
   try:
-    let movie = readMovieFile($path)
+    let movie = probe.readMovieFile($path)
     if int(index) >= movie.tracks.len:
       lastError = "track index past the file"
       return cint(umovErrArg)

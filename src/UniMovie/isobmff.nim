@@ -308,8 +308,13 @@ proc readMovie*(data: string): Movie {.contractual.} =
   ##
   ## Reads structure only. No sample is touched, so the cost is the size of the
   ## `moov` box rather than of the file.
-  require:
-    data.len >= 0
+  ##
+  ## Nothing is required of the caller: every byte here comes from a file, so
+  ## the checks belong in the body and raise `MovieError`. The postcondition is
+  ## the guarantee that matters — a movie that comes back has at least one
+  ## track, so a caller never has to test for an empty one.
+  ensure:
+    result.tracks.len > 0
   body:
     if data.len < 8: raise newException(MovieError, "mp4: too short to be a file")
     let reader = Reader(data: data)
@@ -380,6 +385,7 @@ proc readMovieFile*(path: string): Movie {.contractual.} =
     path.len > 0
   body:
     readMovie(readFile(path))
+
 
 
 

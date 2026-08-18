@@ -15,10 +15,26 @@ def test_version_is_a_string():
 
 
 def test_probe_reports_the_shape():
-    count, video, audio, seconds = probe(FIXTURES / "tiny.mp4")
+    count, video, audio, seconds, fmt = probe(FIXTURES / "tiny.mp4")
     assert count == 1
     assert video == 0
     assert audio == -1        # absent, not an error
+    assert 0.9 < seconds < 1.1
+    assert fmt == "isom"
+
+
+@pytest.mark.parametrize("name,fmt", [
+    ("tiny.mp4", "isom"),
+    ("rotated.mov", "mov"),
+    ("tiny.mkv", "matroska"),
+    ("tiny.webm", "webm"),
+    ("tiny.avi", "avi"),
+])
+def test_every_container_goes_through_one_call(name, fmt):
+    count, video, _, seconds, found = probe(FIXTURES / name)
+    assert found == fmt
+    assert count >= 1
+    assert video == 0
     assert 0.9 < seconds < 1.1
 
 
@@ -33,7 +49,7 @@ def test_track_reports_the_container_code():
 
 def test_rotation_is_clockwise():
     # ffprobe calls this rotation=90 counting anticlockwise.
-    count, video, _, _ = probe(FIXTURES / "rotated.mov")
+    video = probe(FIXTURES / "rotated.mov")[1]
     assert track(FIXTURES / "rotated.mov", video)["rotation"] == 270
 
 

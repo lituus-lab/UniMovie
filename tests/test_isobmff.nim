@@ -133,3 +133,29 @@ suite "malformed input is reported, not fatal":
     damaged[at .. at + 3] = "xxxx"
     expect MovieError:
       discard readMovie(damaged)
+
+suite "what the contracts promise":
+  test "a movie with no declared timescale reports zero, in either build":
+    # A header that omits the timescale is a fact about the file, not a
+    # caller's mistake, so it must not be a precondition: one would raise in
+    # debug and divide by zero in release.
+    var data = readFile(Fixtures / "tiny.mp4")
+    let at = data.find("mvhd")
+    check at > 0
+    data[at .. at + 3] = "xxxx"
+    let movie = readMovie(data)
+    check movie.timescale == 0
+    check movie.durationSeconds == 0.0
+    check movie.tracks[0].durationSeconds > 0.0 # the track still declares one
+
+  test "a track index is either -1 or safe to use":
+    for name in ["tiny.mp4", "av.mp4", "rotated.mov"]:
+      let movie = readMovieFile(Fixtures / name)
+      for index in [movie.videoTrack, movie.audioTrack]:
+        check index == -1 or index in 0 ..< movie.tracks.len
+
+  test "a movie that comes back always has a track":
+    # The postcondition, stated from the outside: readMovie raises rather than
+    # returning an empty presentation.
+    for name in ["tiny.mp4", "av.mp4", "rotated.mov"]:
+      check readMovieFile(Fixtures / name).tracks.len > 0
