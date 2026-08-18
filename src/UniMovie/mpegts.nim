@@ -104,6 +104,9 @@ type BitCursor = object
   bit: int
 
 proc readBit(cursor: var BitCursor): int =
+  ## One bit, most significant first. Reading past the end yields zero rather
+  ## than raising: a parameter set truncated by a lost packet should leave the
+  ## dimensions unusable, not stop the file being catalogued.
   if cursor.bit >= cursor.data.len * 8: return 0
   let index = cursor.bit shr 3
   let shift = 7 - (cursor.bit and 7)
@@ -111,6 +114,7 @@ proc readBit(cursor: var BitCursor): int =
   (int(uint8(cursor.data[index])) shr shift) and 1
 
 proc readBits(cursor: var BitCursor; count: int): int =
+  ## The next `count` bits as an unsigned value.
   for _ in 0 ..< count: result = (result shl 1) or cursor.readBit()
 
 proc readUe(cursor: var BitCursor): int =
