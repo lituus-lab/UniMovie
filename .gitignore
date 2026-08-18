@@ -1,0 +1,59 @@
+# build artifacts
+build/
+# Anchored: this is the build output dir, and unanchored `bin/` would also
+# swallow any nested bin/ a subdirectory legitimately tracks.
+/bin/
+libUniMovie.so
+libUniMovie.so.*
+libUniMovie.dylib
+libUniMovie.a
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+
+# coverage
+coverage/
+lcov.info
+
+# nim cache
+nimcache/
+rnimcache/
+dnimcache/
+
+# docs output
+pages/
+docs/
+*.html
+nimdoc.out.css
+
+# python binding artifacts (sources tracked; generated + bundled lib not)
+py/unimovie/_core.c
+py/unimovie/*.so
+py/unimovie/libUniMovie.so
+py/dist/
+py/build/
+py/*.egg-info/
+py/**/__pycache__/
+py/.pytest_cache/
+# vendored by setup.py (vendor_nim_source) right before `sdist` packages
+# files -- shipped inside the sdist tarball, never tracked here
+py/_nimsrc/
+
+# c test/example binaries
+tests/c/test_unimovie
+examples/c/demo
+
+# os / editor
+.DS_Store
+*~
+.*.swp
+*.dSYM
+
+*.log
+*.core
