@@ -180,3 +180,109 @@ suite "the writer refuses what it cannot write":
     defer: removeFile(target)
     expect MovieError:
       writer.close()
+
+proc editListLines(path: string): seq[string] =
+  ## What ffmpeg's own demuxer reads out of a file's edit lists, one line per
+  ## entry. Empty when ffmpeg is absent — the values are then unchecked rather
+  ## than assumed.
+  if findExe("ffprobe").len == 0: return @[]
+  let (output, _) = execCmdEx("ffprobe -v debug " & path.quoteShell & " 2>&1")
+  for line in output.splitLines():
+    if "edit list" in line and "media time:" in line:
+      result.add line[line.find("edit list") .. ^1].strip()
+
+proc hasBox(data, kind: string): bool =
+  ## Whether a box of that kind appears anywhere in the file's `moov`.
+  var bytes: seq[byte]
+  for character in data: bytes.add byte(character)
+  let moov = boxlayer.findBox(bytes, 0, bytes.len, ["moov"])
+  if moov.body < 0: return false
+  for outer, body, bodyEnd in boxlayer.boxes(bytes, moov.body, moov.bodyEnd):
+    if outer != "trak": continue
+    for inner, _, _ in boxlayer.boxes(bytes, body, bodyEnd):
+      if inner == kind: return true
+
+suite "an edit list, when the caller asks for one":
+  # The fixture is reordered, so its first sample is displayed 2048 units after
+  # it is decoded. That offset is what an edit list is most often written to
+  # cancel, which makes it the honest thing to demonstrate against.
+  setup:
+    let source = readFile(Fixtures / "tiny.mp4")
+    let movie = readMovie(source)
+    let index = movie.videoTrack
+    let track = movie.tracks[index]
+    let timing = sampleTiming(source, index)
+    let config = avcConfig(source)
+    # Named for this process: two builds of this suite run at once collide
+    # over a fixed name, and the failure that causes looks like a muxer bug.
+    let target = getTempDir() / ("unimovie-elst-" & $getCurrentProcessId() & ".mp4")
+
+  teardown:
+    removeFile(target)
+
+  proc remux(target: string; track: Track; source: string; index: int;
+             timing: seq[tuple[duration, compositionOffset: int]];
+             config: string; edits: seq[Edit]) =
+    var writer = newMp4Writer(target, [TrackParams(kind: tkVideo,
+      codec: track.codec, timescale: track.timescale, width: track.width,
+      height: track.height, configKind: "avcC", config: config, edits: edits)])
+    for sample in 0 ..< track.sampleCount:
+      writer.writeSample(0, sampleBytes(source, index, sample),
+        timing[sample].duration, sample in track.keyframes,
+        timing[sample].compositionOffset)
+    writer.close()
+
+  test "no edits writes no edts box at all":
+    remux(target, track, source, index, timing, config, @[])
+    check not hasBox(readFile(target), "edts")
+    check editListLines(target).len == 0
+
+  test "an empty edit holds the track back, and ffmpeg reads it back":
+    remux(target, track, source, index, timing, config,
+          @[Edit(duration: 500, mediaTime: -1), Edit(duration: 0,
+              mediaTime: 0)])
+    check hasBox(readFile(target), "edts")
+    let lines = editListLines(target)
+    if lines.len == 0: skip()
+    else:
+      check lines.len == 2
+      # ffmpeg reports the duration in the track's own timescale, so the 500
+      # milliseconds asked for come back as half of 10240.
+      check "media time: -1" in lines[0]
+      check "duration: 5120" in lines[0]
+      check "media time: 0" in lines[1]
+
+  test "a zero duration means the rest of the track":
+    remux(target, track, source, index, timing, config,
+          @[Edit(duration: 0, mediaTime: 2048)])
+    let lines = editListLines(target)
+    if lines.len == 0: skip()
+    else:
+      check lines.len == 1
+      check "media time: 2048" in lines[0]
+      # One second of media, in the track's timescale rather than the movie's.
+      check "duration: " & $track.timescale in lines[0]
+
+  test "the samples are untouched by the edit list":
+    remux(target, track, source, index, timing, config,
+          @[Edit(duration: 0, mediaTime: 2048)])
+    let written = readFile(target)
+    let writtenTrack = readMovie(written).videoTrack
+    check codedSampleCount(written, writtenTrack) == track.sampleCount
+    for sample in 0 ..< track.sampleCount:
+      check codedSample(written, writtenTrack, sample) ==
+            codedSample(source, index, sample)
+
+  test "an edit the format cannot hold is refused":
+    expect MovieError:
+      discard newMp4Writer(target, [TrackParams(kind: tkVideo, codec: "avc1",
+        timescale: 1000, width: 16, height: 16,
+        edits: @[Edit(duration: -1, mediaTime: 0)])])
+    expect MovieError:
+      discard newMp4Writer(target, [TrackParams(kind: tkVideo, codec: "avc1",
+        timescale: 1000, width: 16, height: 16,
+        edits: @[Edit(duration: 0, mediaTime: -2)])])
+    expect MovieError:
+      discard newMp4Writer(target, [TrackParams(kind: tkVideo, codec: "avc1",
+        timescale: 1000, width: 16, height: 16,
+        edits: @[Edit(duration: 1'i64 shl 33, mediaTime: 0)])])
