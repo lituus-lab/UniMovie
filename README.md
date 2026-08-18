@@ -9,6 +9,23 @@ family.
 
 It answers what `ffprobe` answers, in process.
 
+## It writes, too — muxing only
+
+`newMp4Writer` assembles `ftyp`, `mdat` and the `moov` tables around samples
+somebody else encoded, and never produces one. That is the same boundary the
+reading half keeps: ISO 14496-12 describes the container and nothing here
+implements a codec.
+
+The file that comes out does hold a coded stream, so whoever ran the encoder
+carries whatever obligation that stream carries. A caller with a system encoder
+— VideoToolbox, Media Foundation — hands over the bytes it produced and gets a
+playable MP4 without a second library in the way.
+
+Samples are written as they arrive and `moov` at `close`, so a long recording
+costs its sample table in memory rather than its media. `sampleTiming` gives
+the durations and composition offsets a track was written with, which is what
+lets a file be remuxed without the pictures changing order.
+
 ## No decoder, by design
 
 A track reports the four-character code its samples are in — `avc1`, `hvc1`,
