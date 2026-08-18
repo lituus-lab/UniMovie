@@ -20,7 +20,9 @@ int main(int argc, char **argv) {
 
   int tracks = 0, video = -2, audio = -2;
   double duration = -1.0;
-  assert(umov_probe(path, &tracks, &video, &audio, &duration) == UMOV_OK);
+  char format[16];
+  assert(umov_probe(path, &tracks, &video, &audio, &duration, format) == UMOV_OK);
+  assert(strcmp(format, "isom") == 0);
   assert(tracks == 1);
   assert(video == 0);
   assert(audio == -1); /* no audio track: -1, not an error */
@@ -51,7 +53,10 @@ int main(int argc, char **argv) {
   }
 
   /* Out-of-range input is refused, not clamped. */
-  assert(umov_probe(NULL, &tracks, &video, &audio, &duration) == UMOV_ERR_ARG);
+  assert(umov_probe(NULL, &tracks, &video, &audio, &duration, format) ==
+         UMOV_ERR_ARG);
+  /* format is the one optional argument. */
+  assert(umov_probe(path, &tracks, &video, &audio, &duration, NULL) == UMOV_OK);
   assert(umov_track(path, -1, &kind, codec, &width, &height, &rotation,
                     &samples, &keys) == UMOV_ERR_ARG);
   assert(umov_track(path, 99, &kind, codec, &width, &height, &rotation,
@@ -59,8 +64,22 @@ int main(int argc, char **argv) {
   assert(strlen(umov_last_error()) > 0);
 
   /* A file that is not there is IO, not format. */
-  assert(umov_probe("no-such-file.mp4", &tracks, &video, &audio, &duration) ==
-         UMOV_ERR_IO);
+  assert(umov_probe("no-such-file.mp4", &tracks, &video, &audio, &duration,
+                    format) == UMOV_ERR_IO);
+
+  /* A Matroska file through the same entry point: the ABI dispatches on the
+   * bytes, so one call serves every container this build reads. */
+  {
+    const char *mkv = argc > 3 ? argv[3] : "../fixtures/tiny.mkv";
+    int mtracks = 0, mvideo = -1, maudio = -1;
+    double mduration = 0.0;
+    char mformat[16];
+    if (umov_probe(mkv, &mtracks, &mvideo, &maudio, &mduration, mformat) ==
+        UMOV_OK) {
+      assert(strcmp(mformat, "matroska") == 0);
+      assert(mvideo == 0);
+    }
+  }
 
   printf("c abi: ok\n");
   return 0;

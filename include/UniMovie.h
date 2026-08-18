@@ -43,9 +43,12 @@ const char *umov_version(void);
 const char *umov_last_error(void);
 
 /* Shape of a container: track count, the index of the first video and audio
- * track (-1 when absent), and the playing time in seconds. */
+ * track (-1 when absent), the playing time in seconds, and the container's own
+ * name -- "mp4", "mov", "matroska", "webm", "avi". format takes at most fifteen
+ * characters and a terminating zero, so pass sixteen bytes, or NULL when the
+ * name is not wanted. */
 int umov_probe(const char *path, int *track_count, int *video_index,
-               int *audio_index, double *duration_seconds);
+               int *audio_index, double *duration_seconds, char format[16]);
 
 /* One track's shape. codec receives the container's own four-character code
  * and a terminating zero, so pass an array of five bytes. width and height are

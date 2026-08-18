@@ -21,11 +21,16 @@ user installed.
 Codecs that are free of royalties — AV1, VP8/VP9, Theora, MPEG-2, Motion JPEG —
 may be decoded here without that reservation.
 
-| Container | Read | Limitations |
-|---|:---:|---|
-| MP4, M4V, MOV | yes | Tracks, timescales, durations, dimensions, rotation, sync-sample index, per-sample bytes. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
-| Matroska, WebM | no | |
-| AVI | no | |
+| Container | Limitations |
+|---|---|
+| MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
+| Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements. Clusters are not walked, so there is no per-sample access and no keyframe index — Cues would give one. |
+| AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags in `movi`. |
+
+Codec identifiers are reported as the four-character codes MP4 uses, whichever
+container they came from: a Matroska `V_MPEG4/ISO/AVC` reads as `avc1`, so a
+caller registers one backend per codec rather than one per container. An
+identifier with no MP4 equivalent passes through unchanged.
 
 ## Rotation counts clockwise
 

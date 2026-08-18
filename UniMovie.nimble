@@ -33,15 +33,19 @@ task docs, "API reference + book into pages/ — what CI publishes":
 
 task test, "Nim tests (debug, contracts active)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
+  exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
 
 task testRelease, "Nim tests (release, contracts compiled away)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
 
 task testCi, "Nim tests (CI subset, debug)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
+  exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
 
 task testCiRelease, "Nim tests (CI subset, release)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
 
 task testAll, "debug + release + C ABI":
   exec "nimble test"
@@ -119,14 +123,25 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   # --include keeps stdlib out of the capture, where lcov 2.x aborts on Nim's
   # codegen. Together they leave nothing to suppress: no --ignore-errors here,
   # so a real problem still fails the build.
-  let cache = "build/covcache"
-  rmDir cache
+  # One nimcache per suite, then merge: a shared cache lets the second run
+  # clobber the first's counters, and the report then describes only the last
+  # suite while looking complete.
   rmDir "coverage"
-  exec "nim c --path:src --nimcache:" & cache &
-       " --debugger:native --passC:--coverage --passL:--coverage" &
-       " -o:build/test_coverage tests/test_isobmff.nim"
-  exec "./build/test_coverage"
-  exec "lcov --capture --directory " & cache & " --base-directory ." &
-       " --include \"*/src/UniMovie/*\" --output-file lcov.info --quiet"
+  rmFile "lcov.info"
+  var traces: seq[string]
+  for suite in ["isobmff", "probe"]:
+    let cache = "build/covcache_" & suite
+    rmDir cache
+    exec "nim c --path:src --nimcache:" & cache &
+         " --debugger:native --passC:--coverage --passL:--coverage" &
+         " -o:build/test_cov_" & suite & " tests/test_" & suite & ".nim"
+    exec "./build/test_cov_" & suite
+    let trace = "build/lcov_" & suite & ".info"
+    exec "lcov --capture --directory " & cache & " --base-directory ." &
+         " --include \"*/src/UniMovie/*\" --output-file " & trace & " --quiet"
+    traces.add trace
+  var merge = "lcov"
+  for trace in traces: merge &= " --add-tracefile " & trace
+  exec merge & " --output-file lcov.info --quiet"
   exec "genhtml lcov.info --output-directory coverage --legend --quiet"
   exec "lcov --summary lcov.info"

@@ -7,7 +7,7 @@ cdef extern from "UniMovie.h":
     const char *umov_version()
     const char *umov_last_error()
     int umov_probe(const char *path, int *track_count, int *video_index,
-                   int *audio_index, double *duration_seconds)
+                   int *audio_index, double *duration_seconds, char *format)
     int umov_track(const char *path, int index, int *kind, char *codec,
                    int *width, int *height, int *rotation, int *sample_count,
                    int *keyframe_count)
@@ -37,14 +37,18 @@ def _check(int status):
 def probe(path):
     """Shape of a container.
 
-    Returns ``(track_count, video_index, audio_index, duration_seconds)``,
-    where an absent video or audio track is ``-1`` rather than an error.
+    Returns ``(track_count, video_index, audio_index, duration_seconds,
+    format)``, where an absent video or audio track is ``-1`` rather than an
+    error and ``format`` is the container's own name — ``mp4``, ``matroska``,
+    ``webm``, ``avi``.
     """
     cdef bytes encoded = str(path).encode("utf-8")
     cdef int tracks = 0, video = -1, audio = -1
     cdef double duration = 0.0
-    _check(umov_probe(encoded, &tracks, &video, &audio, &duration))
-    return tracks, video, audio, duration
+    cdef char format[16]
+    _check(umov_probe(encoded, &tracks, &video, &audio, &duration, format))
+    return (tracks, video, audio, duration,
+            format.decode("ascii", "replace"))
 
 
 def track(path, int index):
@@ -74,5 +78,5 @@ def track(path, int index):
 
 def tracks(path):
     """Every track of a file, in order."""
-    count, _, _, _ = probe(path)
+    count = probe(path)[0]
     return [track(path, index) for index in range(count)]
