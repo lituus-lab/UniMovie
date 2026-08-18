@@ -142,15 +142,30 @@ proc parseHdlr(reader: Reader; body, bodyEnd: int): TrackKind =
   of "soun": tkAudio
   else: tkOther
 
-proc parseStsd(reader: Reader; body, bodyEnd: int): string =
+proc parseStsd(reader: Reader; body, bodyEnd: int):
+    tuple[codec: string; width, height: int] =
   ## The first sample entry's four-character code — the codec, as the container
-  ## names it. Not resolved to a friendlier name: `avc1` and `avc3` differ in
+  ## names it — and, for a video entry, the size the decoder produces.
+  ##
+  ## The code is not resolved to a friendlier name: `avc1` and `avc3` differ in
   ## where their parameter sets live, and flattening both to "h264" would lose
   ## what a backend needs to know.
-  if body + 8 > bodyEnd: return ""
+  ##
+  ## The size here is the coded one, which `tkhd`'s is not: that one is the
+  ## display size, and the two differ by the sample aspect ratio on any file
+  ## whose pixels are not square.
+  if body + 8 > bodyEnd: return
   for kind, entryBody, entryEnd in boxes(reader.bytes, body + 8, bodyEnd):
-    return kind
-  ""
+    result.codec = kind
+    # A visual sample entry puts the two 16-bit dimensions 24 bytes in, past
+    # the six reserved bytes, the data reference index and 16 more reserved.
+    if entryBody + 28 <= entryEnd:
+      let width = int(reader.beU16(entryBody + 24))
+      let height = int(reader.beU16(entryBody + 26))
+      if width in 1 .. MaxDimension and height in 1 .. MaxDimension:
+        result.width = width
+        result.height = height
+    return
 
 proc parseStss(reader: Reader; body, bodyEnd: int; sampleCount: int): seq[int] =
   ## The sync sample table: which samples a player may start at.
@@ -180,7 +195,16 @@ proc parseTrak(reader: Reader; body, bodyEnd: int): Track =
   let stbl = findBox(reader.bytes, body, bodyEnd, ["mdia", "minf", "stbl"])
   if stbl.body < 0: return
   let stsd = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["stsd"])
-  if stsd.body >= 0: result.codec = reader.parseStsd(stsd.body, stsd.bodyEnd)
+  if stsd.body >= 0:
+    let entry = reader.parseStsd(stsd.body, stsd.bodyEnd)
+    result.codec = entry.codec
+    result.codedWidth = entry.width
+    result.codedHeight = entry.height
+    # A track whose header carried no size still has one here, which is what a
+    # file written without a `tkhd` size leaves.
+    if result.width == 0 and entry.width > 0:
+      result.width = entry.width
+      result.height = entry.height
   let stsz = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["stsz"])
   if stsz.body >= 0 and stsz.body + 12 <= stsz.bodyEnd:
     let count = int(reader.beU32(stsz.body + 8))
@@ -503,5 +527,70 @@ proc editList*(data: string; trackIndex: int): seq[Edit] {.contractual.} =
         at += 2 * width + 4 # the media rate, which is not reported
       return
     raise newException(MovieError, "mp4: track index past the file")
+
+
+proc readMovieHeaderFile*(path: string): Movie {.contractual.} =
+  ## `readMovie` over a file, reading only the boxes that describe it.
+  ##
+  ## `moov` holds everything a probe reports and `mdat` holds the media, so
+  ## walking the top-level box headers and reading only the first costs the
+  ## header rather than the file. On a 177 MB recording that is a few hundred
+  ## kilobytes instead of 177 MB, which is the difference between cataloguing a
+  ## library and running out of memory in the middle of it.
+  ##
+  ## `moov` may sit after the media — a file not written for streaming puts it
+  ## there — so the walk continues to the end rather than stopping at the first
+  ## large box.
+  require:
+    path.len > 0
+  ensure:
+    result.tracks.len > 0
+  body:
+    var handle: File
+    if not handle.open(path):
+      raise newException(IOError, "cannot open " & path)
+    defer: handle.close()
+    let size = handle.getFileSize()
+    var at = 0'i64
+    var header = newString(16)
+    # `ftyp` is small and comes first, and `readMovie` wants it: it is what
+    # says the file is this format rather than something that happens to hold
+    # a box. Kept so the buffer handed on looks like the file it came from.
+    var brand = ""
+    while at + 8 <= size:
+      handle.setFilePos(at)
+      if handle.readBuffer(addr header[0], 8) != 8: break
+      var boxSize = 0'i64
+      for index in 0 .. 3:
+        boxSize = (boxSize shl 8) or int64(uint8(header[index]))
+      let kind = header[4 ..< 8]
+      var bodyAt = at + 8
+      if boxSize == 1:
+        # A size of 1 means the real one is the eight bytes that follow, which
+        # is how a box past four gigabytes is written.
+        if at + 16 > size: break
+        if handle.readBuffer(addr header[8], 8) != 8: break
+        boxSize = 0
+        for index in 8 .. 15:
+          boxSize = (boxSize shl 8) or int64(uint8(header[index]))
+        bodyAt = at + 16
+      elif boxSize == 0:
+        boxSize = size - at # the last box runs to the end of the file
+      if boxSize < bodyAt - at or at + boxSize > size: break
+      if kind == "ftyp" and boxSize in 8 .. 1024:
+        brand = newString(int(boxSize))
+        handle.setFilePos(at)
+        if handle.readBuffer(addr brand[0], int(boxSize)) != int(boxSize):
+          brand = ""
+      elif kind == "moov":
+        if boxSize > int64(MaxSamples) * 64:
+          raise newException(MovieError, "mp4: implausible moov size")
+        var buffer = newString(int(boxSize))
+        handle.setFilePos(at)
+        if handle.readBuffer(addr buffer[0], int(boxSize)) != int(boxSize):
+          raise newException(MovieError, "mp4: moov box is truncated")
+        return readMovie(brand & buffer)
+      at += boxSize
+    raise newException(MovieError, "mp4: no moov box")
 
 

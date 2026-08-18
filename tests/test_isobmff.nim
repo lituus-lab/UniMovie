@@ -8,6 +8,10 @@
 ## few kilobytes each — the container is under test, never the codec.
 import std/[unittest, os, osproc, strutils, tables]
 import UniMovie
+# Qualified only: importing it plainly would make `readMovieFile` ambiguous
+# with the dispatching one the umbrella exports, which is the whole reason the
+# umbrella leaves this module's version out.
+from UniMovie/isobmff import nil
 
 const Fixtures = currentSourcePath.parentDir / "fixtures"
 
@@ -228,3 +232,52 @@ suite "the edit list, which a faithful remux cannot drop":
       writer.writeSample(0, payload, timing[sample].duration)
     writer.close()
     check editList(readFile(target), 0) == wanted
+
+suite "the coded size and the displayed size are not the same number":
+  test "a track with square pixels reports one size twice":
+    for name in ["tiny.mp4", "av.mp4"]:
+      let movie = readMovieFile(Fixtures / name)
+      let track = movie.tracks[movie.videoTrack]
+      check track.codedWidth == track.width
+      check track.codedHeight == track.height
+
+  test "a track with a 16:15 sample aspect reports two different ones":
+    let movie = readMovieFile(Fixtures / "anamorphic.mp4")
+    let track = movie.tracks[movie.videoTrack]
+    check track.codedWidth == 64
+    check track.codedHeight == 48
+    # 64 pixels shown 16/15 as wide, which is where the difference lives.
+    check track.width == 68
+    check track.height == 48
+    check track.width != track.codedWidth
+
+  test "the coded size is the one ffprobe reports as the stream's":
+    # ffprobe's `width` is the decoder's, not the display's. Every fixture is
+    # checked, so a change that swapped the two would fail here rather than on
+    # the one file whose pixels are not square.
+    for name in ["tiny.mp4", "av.mp4", "rotated.mov", "anamorphic.mp4"]:
+      let reported = ffprobeField(Fixtures / name, "stream=width")
+      if reported.len == 0: continue
+      let movie = readMovieFile(Fixtures / name)
+      check movie.tracks[movie.videoTrack].codedWidth == parseInt(reported)
+
+suite "a file is read box by box, not swallowed whole":
+  test "the bounded read says exactly what the whole-file read says":
+    for name in ["tiny.mp4", "av.mp4", "rotated.mov", "anamorphic.mp4"]:
+      let whole = isobmff.readMovie(readFile(Fixtures / name))
+      let bounded = readMovieHeaderFile(Fixtures / name)
+      check whole.format == bounded.format
+      check whole.timescale == bounded.timescale
+      check whole.duration == bounded.duration
+      check whole.tracks == bounded.tracks
+
+  test "a file with no moov is refused rather than read as empty":
+    let target = getTempDir() /
+      ("unimovie-nomoov-" & $getCurrentProcessId() & ".mp4")
+    defer: removeFile(target)
+    writeFile(target, "\0\0\0\x14ftypmp42\0\0\0\0mp42\0\0\0\x08mdat")
+    expect MovieError: discard readMovieHeaderFile(target)
+
+  test "a path that cannot be opened raises IOError, not MovieError":
+    expect IOError:
+      discard readMovieHeaderFile(getTempDir() / "unimovie-absent-file.mp4")
