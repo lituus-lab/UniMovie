@@ -625,3 +625,32 @@ proc umov_writer_counts(handle, track: cint; pending, flushed: ptr cint): cint
     result = cint(umovErrArg)
 
 
+
+proc umov_location(path: cstring; latitude, longitude: ptr cdouble;
+                   found: ptr cint): cint {.exportc, cdecl, dynlib.} =
+  ## Where a recording says it was made.
+  ##
+  ## `found` is 0 when the file carries no position, which most do not and
+  ## which is not a failure. Latitude 0, longitude 0 is a real point in the
+  ## Atlantic, so a caller must read `found` rather than test the numbers.
+  if path == nil or latitude == nil or longitude == nil or found == nil:
+    lastError = "every argument must be non-null"
+    return cint(umovErrArg)
+  try:
+    let where = locationFile($path)
+    found[] = cint(if where.found: 1 else: 0)
+    latitude[] = cdouble(where.latitude)
+    longitude[] = cdouble(where.longitude)
+    lastError = ""
+    result = cint(umovOk)
+  except MovieError as error:
+    lastError = error.msg
+    result = cint(umovErrFormat)
+  except IOError, OSError:
+    lastError = getCurrentExceptionMsg()
+    result = cint(umovErrIo)
+  except CatchableError, Defect:
+    lastError = getCurrentExceptionMsg()
+    result = cint(umovErrFormat)
+
+

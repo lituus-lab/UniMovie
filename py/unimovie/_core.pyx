@@ -14,6 +14,8 @@ cdef extern from "UniMovie.h":
     int umov_track_sizes(const char *path, int index, int *coded_width,
                          int *coded_height)
     int umov_sniff(const char *path, char *format)
+    int umov_location(const char *path, double *latitude, double *longitude,
+                      int *found)
     int umov_coded_sample_count(const char *path, int track, int *count)
     int umov_coded_sample(const char *path, int track, int index,
                           unsigned char *buffer, size_t capacity,
@@ -86,8 +88,12 @@ def probe(path):
 
     Returns ``(track_count, video_index, audio_index, duration_seconds,
     format)``, where an absent video or audio track is ``-1`` rather than an
-    error and ``format`` is the container's own name — ``mp4``, ``matroska``,
-    ``webm``, ``avi``.
+    error.
+
+    ``format`` is the container's own name — ``matroska``, ``webm``, ``avi``
+    — except for an ISO base media file, which reports its major brand:
+    ``isom``, ``mp42``, ``qt  ``. There is no single ``mp4`` answer to give,
+    since the brand is what the file itself claims to be.
     """
     cdef bytes encoded = str(path).encode("utf-8")
     cdef int tracks = 0, video = -1, audio = -1
@@ -274,7 +280,15 @@ cdef class Writer:
         try:
             memset(params, 0, count * sizeof(umov_track_params))
             for i, spec in enumerate(tracks):
-                params[i].kind = 1 if spec.get("kind") == "audio" else 0
+                kind_name = spec.get("kind")
+                if kind_name == "audio":
+                    params[i].kind = 1
+                elif kind_name == "video":
+                    params[i].kind = 0
+                else:
+                    raise ValueError(
+                        "a track is \"video\" or \"audio\", not "
+                        + repr(kind_name))
                 codec_bytes = str(spec["codec"]).encode("ascii")
                 if len(codec_bytes) != 4:
                     raise ValueError("a codec is four characters")
@@ -286,6 +300,9 @@ cdef class Writer:
                 params[i].sample_rate = int(spec.get("sample_rate", 0))
                 config_kind_bytes = str(spec.get("config_kind", "")).encode("ascii")
                 if config_kind_bytes:
+                    if len(config_kind_bytes) != 4:
+                        raise ValueError(
+                            "a config kind is four characters, or empty")
                     strncpy(params[i].config_kind, config_kind_bytes, 4)
                 config_bytes = bytes(spec.get("config", b""))
                 if config_bytes:
@@ -338,6 +355,19 @@ cdef class Writer:
             handle, self._handle = self._handle, 0
             _check(umov_writer_close(handle))
 
+    def __dealloc__(self):
+        # A writer that is dropped without being closed still holds a handle
+        # the library pinned for it. Releasing it here is what keeps that a
+        # missing index rather than a leak that lasts the process.
+        #
+        # The status is discarded and nothing here raises: an exception from
+        # __dealloc__ cannot be propagated and would only be printed and
+        # swallowed. close() stays the documented path, and the one that
+        # reports what went wrong.
+        if self._handle != 0:
+            umov_writer_close(self._handle)
+            self._handle = 0
+
     def __enter__(self):
         return self
 
@@ -355,3 +385,17 @@ def open_writer(path, tracks, kind=WRITER_MP4):
     the codec's setup bytes where it has any.
     """
     return Writer(path, tracks, kind)
+
+
+def location(path):
+    """Where a recording says it was made, as ``(latitude, longitude)``.
+
+    ``None`` when the file carries no position, which most do not. Latitude 0,
+    longitude 0 is a real point in the Atlantic, so absence is reported as
+    nothing rather than as a pair of zeros.
+    """
+    cdef bytes encoded = str(path).encode("utf-8")
+    cdef double latitude = 0.0, longitude = 0.0
+    cdef int found = 0
+    _check(umov_location(encoded, &latitude, &longitude, &found))
+    return (latitude, longitude) if found else None

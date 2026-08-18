@@ -40,15 +40,28 @@ suite "mp4 shape":
     check abs(movie.durationSeconds - 1.0) < 0.05
 
   test "dimensions agree with ffprobe":
+    # Coded against coded. `width`/`height` come from `tkhd` and are the
+    # display size, after the aspect ratio and the rotation matrix;
+    # `codedWidth`/`codedHeight` come from the sample entry and are what the
+    # stream actually carries. ffprobe reports both, so each is compared with
+    # its own counterpart — the two agree on these fixtures, and comparing
+    # across would pass here while failing the day a fixture has non-square
+    # pixels, reading as a regression in the reader rather than in the test.
     for name in ["tiny.mp4", "av.mp4", "rotated.mov"]:
       let path = Fixtures / name
       let movie = readMovieFile(path)
       let index = movie.videoTrack
       check index >= 0
-      let width = ffprobeField(path, "stream=width")
-      if width.len > 0:
-        check $movie.tracks[index].width == width
-        check $movie.tracks[index].height == ffprobeField(path, "stream=height")
+      let coded = ffprobeField(path, "stream=coded_width")
+      if coded.len > 0:
+        check $movie.tracks[index].codedWidth == coded
+        check $movie.tracks[index].codedHeight ==
+          ffprobeField(path, "stream=coded_height")
+      let shown = ffprobeField(path, "stream=width")
+      if shown.len > 0:
+        check $movie.tracks[index].width == shown
+        check $movie.tracks[index].height ==
+          ffprobeField(path, "stream=height")
 
   test "an audio track is found beside the video one":
     let movie = readMovieFile(Fixtures / "av.mp4")
@@ -317,3 +330,40 @@ suite "a file with no ftyp box is still a movie":
     defer: removeFile(target)
     writeFile(target, "\0\0\0\x08wide\0\0\0\x08free")
     expect MovieError: discard readMovieFile(target)
+
+suite "where a recording says it was made":
+  test "a file that carries a position reports it":
+    let placed = locationFile(Fixtures / "located.mov")
+    check placed.found
+    check abs(placed.latitude - 45.9374) < 1e-4
+    check abs(placed.longitude - 6.6387) < 1e-4
+
+  test "a file that carries none says so, rather than reporting zero":
+    # Latitude 0, longitude 0 is a real point in the Atlantic. A file with no
+    # position must not be read as having been taken there.
+    let bare = locationFile(Fixtures / "tiny.mp4")
+    check not bare.found
+    check bare.latitude == 0.0
+    check bare.longitude == 0.0
+
+  test "the same answer from bytes as from a path":
+    check location(readFile(Fixtures / "located.mov")) ==
+          locationFile(Fixtures / "located.mov")
+
+  test "an ISO 6709 string is split on its signs":
+    # The standard allows several precisions, so fixed widths would read one
+    # phone's files and not another's.
+    check parseIso6709("+45.9374+006.6387+542.091/") ==
+          (45.9374, 6.6387, true)
+    check parseIso6709("-33.8688+151.2093/") == (-33.8688, 151.2093, true)
+    check parseIso6709("+12.34-098.76") == (12.34, -98.76, true)
+    # Out of range, or not enough numbers, is no position rather than a wrong
+    # one.
+    check not parseIso6709("+91.0+000.0/").found
+    check not parseIso6709("+45.0+181.0/").found
+    check not parseIso6709("+45.0/").found
+    check not parseIso6709("").found
+    check not parseIso6709("nowhere").found
+
+  test "a file that is not ISO base media raises rather than guessing":
+    expect MovieError: discard location("not a container at all")
