@@ -346,6 +346,31 @@ proc codedSample*(data: string; trackIndex, sampleIndex: int): string
       return data[at ..< at + table.sizes[sampleIndex]]
     raise newException(MovieError, "mp4: track index past the file")
 
+proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
+  ## How many coded samples a track holds.
+  ##
+  ## `readMovie` already reports this as `Track.sampleCount`, from the same
+  ## table. It is here so that every container answers the question the same
+  ## way — the ones with no sample table have nowhere else to put it.
+  require:
+    trackIndex >= 0
+  ensure:
+    result >= 0
+  body:
+    let reader = Reader(data: data)
+    let moov = findBox(reader.bytes, 0, data.len, ["moov"])
+    if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
+    var seen = 0
+    for kind, body, bodyEnd in boxes(reader.bytes, moov.body, moov.bodyEnd):
+      if kind != "trak": continue
+      if seen != trackIndex:
+        inc seen
+        continue
+      let stbl = findBox(reader.bytes, body, bodyEnd, ["mdia", "minf", "stbl"])
+      if stbl.body < 0: raise newException(MovieError, "mp4: track has no stbl")
+      return reader.sampleTable(stbl.body, stbl.bodyEnd, data.len).sizes.len
+    raise newException(MovieError, "mp4: track index past the file")
+
 proc sampleTiming*(data: string; trackIndex: int):
     seq[tuple[duration, compositionOffset: int]] {.contractual.} =
   ## Per-sample decode duration and composition offset, in the track's own

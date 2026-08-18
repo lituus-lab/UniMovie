@@ -115,6 +115,11 @@ const
   idVideo = 0xE0'i64
   idPixelWidth = 0xB0'i64
   idPixelHeight = 0xBA'i64
+  idCodecPrivate = 0x63A2'i64
+  idCluster = 0x1F43B675'i64
+  idSimpleBlock = 0xA3'i64
+  idBlockGroup = 0xA0'i64
+  idBlock = 0xA1'i64
 
 iterator elements(cursor: var Cursor): tuple[id: int64; at, size: int] =
   ## Each child element at this level, as its identifier and the span of its
@@ -266,5 +271,181 @@ proc readMatroskaFile*(path: string): Movie {.contractual.} =
     path.len > 0
   body:
     readMatroska(readFile(path))
+
+
+
+
+# The media, which the header walk above deliberately skips. A Cluster holds
+# blocks, a block holds one frame or several laced together, and neither the
+# count nor the position of any of it is indexed outside the Cues — so reaching
+# sample n costs a walk from the first Cluster.
+
+proc frameSpans(data: string; at, limit: int):
+    tuple[track: int; spans: seq[Slice[int]]] =
+  ## The track number a block belongs to and where each of its frames sits.
+  ##
+  ## A block is a track number, a signed relative timestamp, a flags byte and
+  ## then the frames. Bits 1-2 of the flags say how several frames share one
+  ## block — Matroska calls it lacing, and it exists because a block header per
+  ## frame is a real cost on audio, where a frame can be twenty bytes.
+  ##
+  ## A malformed size ends the block at the frames read so far rather than
+  ## raising: the frames before the damage are still exactly what the file
+  ## holds.
+  var cursor = Cursor(data: data, at: at, limit: limit)
+  let track = cursor.readSize()
+  if track < 0: return (-1, @[])
+  if cursor.at + 3 > limit: return (-1, @[])
+  cursor.at += 2 # the timestamp, relative to the cluster's, unused here
+  let flags = uint8(data[cursor.at])
+  inc cursor.at
+  result.track = int(track)
+
+  let lacing = (flags shr 1) and 0x03
+  if lacing == 0:
+    if cursor.at < limit: result.spans.add cursor.at ..< limit
+    return
+  if cursor.at >= limit: return
+  let count = int(uint8(data[cursor.at])) + 1
+  inc cursor.at
+
+  var sizes = newSeq[int](count)
+  case lacing
+  of 1:
+    # Xiph: each size but the last as a run of 255s ending in a smaller byte.
+    for index in 0 ..< count - 1:
+      var size = 0
+      while cursor.at < limit:
+        let piece = int(uint8(data[cursor.at]))
+        inc cursor.at
+        size += piece
+        if piece != 255: break
+      sizes[index] = size
+  of 2:
+    # Fixed: the frames divide the rest evenly, so only the count is stored.
+    let rest = limit - cursor.at
+    if count == 0 or rest mod count != 0: return
+    for index in 0 ..< count: sizes[index] = rest div count
+  of 3:
+    # EBML: the first size outright, each next one as a signed difference from
+    # the one before, which keeps a run of similar frames to a byte apiece.
+    let first = cursor.readSize()
+    if first < 0: return
+    sizes[0] = int(first)
+    for index in 1 ..< count - 1:
+      let width = block:
+        if cursor.at >= limit: return
+        let lead = uint8(data[cursor.at])
+        if lead == 0: return
+        var found = 1
+        while found <= 8 and (lead and uint8(0x80 shr (found - 1))) == 0: inc found
+        found
+      let raw = cursor.readSize()
+      if raw < 0: return
+      # Signed: the range is centred, so the bias is half of what the width holds.
+      let bias = (1'i64 shl (7 * width - 1)) - 1
+      sizes[index] = sizes[index - 1] + int(raw - bias)
+      if sizes[index] < 0: return
+  else: return
+
+  var used = 0
+  for index in 0 ..< count - 1: used += sizes[index]
+  if lacing != 2:
+    let rest = limit - cursor.at - used
+    if rest < 0: return
+    sizes[count - 1] = rest
+
+  for size in sizes:
+    if size < 0 or cursor.at + size > limit: return
+    result.spans.add cursor.at ..< cursor.at + size
+    cursor.at += size
+
+iterator trackFrames(data: string; trackNumber: int): Slice[int] =
+  ## Every frame of one track, in the order the file stores them.
+  ##
+  ## Clusters are walked in file order and blocks within them likewise, which
+  ## is decode order — not display order. A stream with B-frames comes back
+  ## reordered, exactly as a decoder wants it.
+  var top = Cursor(data: data, at: 0, limit: data.len)
+  for id, at, size in top.elements:
+    if id != idSegment: continue
+    var segment = Cursor(data: data, at: at, limit: at + size)
+    for segmentId, segmentAt, segmentSize in segment.elements:
+      if segmentId != idCluster: continue
+      var cluster = Cursor(data: data, at: segmentAt,
+                           limit: segmentAt + segmentSize)
+      for clusterId, blockAt, blockSize in cluster.elements:
+        var payload = -1 .. -1
+        if clusterId == idSimpleBlock:
+          payload = blockAt ..< blockAt + blockSize
+        elif clusterId == idBlockGroup:
+          var group = Cursor(data: data, at: blockAt,
+                             limit: blockAt + blockSize)
+          for groupId, groupAt, groupSize in group.elements:
+            if groupId == idBlock:
+              payload = groupAt ..< groupAt + groupSize
+              break
+        if payload.a < 0: continue
+        let found = frameSpans(data, payload.a, payload.b + 1)
+        if found.track != trackNumber: continue
+        for span in found.spans: yield span
+    break
+
+proc trackNumbers(data: string): seq[int] =
+  ## The container's own track numbers, in the order `readMatroska` reports the
+  ## tracks — a block names its track by number, and a caller counts positions.
+  var top = Cursor(data: data, at: 0, limit: data.len)
+  for id, at, size in top.elements:
+    if id != idSegment: continue
+    var segment = Cursor(data: data, at: at, limit: at + size)
+    for segmentId, segmentAt, segmentSize in segment.elements:
+      if segmentId != idTracks: continue
+      var tracks = Cursor(data: data, at: segmentAt,
+                          limit: segmentAt + segmentSize)
+      for trackId, trackAt, trackSize in tracks.elements:
+        if trackId != idTrackEntry: continue
+        var entry = Cursor(data: data, at: trackAt, limit: trackAt + trackSize)
+        for entryId, entryAt, entrySize in entry.elements:
+          if entryId == idTrackNumber:
+            result.add int(entry.readUInt(entryAt, entrySize))
+            break
+    break
+
+proc codedSample*(data: string; trackIndex, sampleIndex: int): string
+    {.contractual.} =
+  ## The coded bytes of one frame, exactly as the file holds them.
+  ##
+  ## Costs a walk from the first Cluster to that frame, because Matroska
+  ## indexes nothing outside its Cues — where ISO base media reads an offset
+  ## from a table. A caller taking every frame in turn should expect the walk
+  ## each time.
+  require:
+    trackIndex >= 0
+    sampleIndex >= 0
+  body:
+    let numbers = trackNumbers(data)
+    if trackIndex >= numbers.len:
+      raise newException(MovieError, "mkv: track index past the file")
+    var seen = 0
+    for span in trackFrames(data, numbers[trackIndex]):
+      if seen == sampleIndex: return data[span]
+      inc seen
+    raise newException(MovieError, "mkv: sample index past the track")
+
+proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
+  ## How many frames a track holds.
+  ##
+  ## Not on `Track`, and not filled by `readMatroska`: it is the same full walk
+  ## as `codedSample`, which a caller asking only for a file's shape should not
+  ## pay for.
+  require:
+    trackIndex >= 0
+  ensure:
+    result >= 0
+  body:
+    let numbers = trackNumbers(data)
+    if trackIndex >= numbers.len:
+      raise newException(MovieError, "mkv: track index past the file")
+    for span in trackFrames(data, numbers[trackIndex]): inc result
 
 

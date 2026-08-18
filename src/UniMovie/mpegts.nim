@@ -370,3 +370,95 @@ proc readMpegTsFile*(path: string): Movie {.contractual.} =
     readMpegTs(readFile(path))
 
 
+
+
+# The media. A transport stream carries it as PES packets chopped across
+# 188-byte packets, so an access unit is gathered rather than sliced: it starts
+# where a packet says one starts and ends where the next one does.
+
+func pesPayloadStart(unit: string): int =
+  ## Where a PES packet's payload begins, past its header.
+  ##
+  ## Six bytes of start code, stream identifier and length, then — for the
+  ## stream identifiers that carry media — two flag bytes and a length saying
+  ## how much optional header follows. Padding and the table-carrying
+  ## identifiers have no such extension, so their payload starts at six.
+  if unit.len < 6: return unit.len
+  let streamId = int(uint8(unit[3]))
+  if streamId in [0xBC, 0xBE, 0xBF, 0xF0, 0xF1, 0xF2, 0xF8, 0xFF]: return 6
+  if unit.len < 9: return unit.len
+  min(9 + int(uint8(unit[8])), unit.len)
+
+iterator pesUnits(data: string; pid: int): string =
+  ## Every PES payload on one program identifier, in the order the stream
+  ## carries it.
+  ##
+  ## For H.264 and MPEG-2 that is one access unit per PES packet, which is what
+  ## a decoder is handed and what `ffprobe` counts as a packet. The bytes come
+  ## back in the byte-stream form a transport stream stores — start codes, not
+  ## the length prefixes an MP4 uses — because converting between the two is
+  ## the backend's business.
+  # Nested under the layout test rather than guarded by an early return: an
+  # inline iterator cannot return.
+  let layout = packetLayout(data)
+  if layout.size > 0:
+    var pending = ""
+    var gathering = false
+    var at = layout.offset
+    var scanned = 0
+    while at + layout.size <= data.len and scanned < MaxScanPackets:
+      inc scanned
+      let packet = parsePacket(data, at, layout.size)
+      at += layout.size
+      if packet.pid != pid or packet.size <= 0: continue
+      if packet.start:
+        if gathering and pending.len > 0:
+          yield pending[pesPayloadStart(pending) .. ^1]
+        pending = ""
+        gathering = true
+      if gathering:
+        pending.add data[packet.at ..< packet.at + packet.size]
+    if gathering and pending.len > 0:
+      yield pending[pesPayloadStart(pending) .. ^1]
+
+proc streamPids(data: string): seq[int] =
+  ## The program identifiers of the streams `readMpegTs` reports, in the same
+  ## order — a caller's track index means the same thing in both.
+  let movie = readMpegTs(data)
+  for track in movie.tracks: result.add track.id
+
+proc codedSample*(data: string; trackIndex, sampleIndex: int): string
+    {.contractual.} =
+  ## The coded bytes of one access unit, exactly as the stream carries them.
+  ##
+  ## Costs a walk from the first packet, since a transport stream indexes
+  ## nothing at all — it is meant to be tuned into, not sought within.
+  require:
+    trackIndex >= 0
+    sampleIndex >= 0
+  body:
+    let pids = streamPids(data)
+    if trackIndex >= pids.len:
+      raise newException(MovieError, "ts: track index past the stream")
+    var seen = 0
+    for unit in pesUnits(data, pids[trackIndex]):
+      if seen == sampleIndex: return unit
+      inc seen
+    raise newException(MovieError, "ts: sample index past the stream")
+
+proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
+  ## How many access units a stream holds within the packets this reader scans.
+  ##
+  ## A transport stream declares no count anywhere, which is why `readMpegTs`
+  ## reports `sampleCount` as 0; this is the walk that finds out.
+  require:
+    trackIndex >= 0
+  ensure:
+    result >= 0
+  body:
+    let pids = streamPids(data)
+    if trackIndex >= pids.len:
+      raise newException(MovieError, "ts: track index past the stream")
+    for unit in pesUnits(data, pids[trackIndex]): inc result
+
+

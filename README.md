@@ -41,20 +41,15 @@ may be decoded here without that reservation.
 | Container | Limitations |
 |---|---|
 | MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
-| Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements. Clusters are not walked, so there is no per-sample access and no keyframe index — Cues would give one. |
-| AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags in `movi`. |
-| MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
-| Ogg (OGV) | Streams and codecs from each one's first packet, with the picture size and frame rate the identification header carries. Duration is the frame count over that rate. VP8 is covered by a fixture; the Theora path is written from the specification, because no encoder here produces one. |
+| Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements, and the coded bytes of any frame by walking the Clusters. No keyframe index — Cues would give one. |
+| AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`, and the coded bytes of any chunk by walking `movi`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags. |
+| MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps, and the coded bytes of any access unit by reassembling its PES packets. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
+| Ogg (OGV) | Streams and codecs from each one's first packet, with the picture size and frame rate the identification header carries. Duration is the frame count over that rate, and a packet that spans pages is reassembled to give the coded bytes. VP8 is covered by a fixture; the Theora path is written from the specification, because no encoder here produces one. |
 
 `sampleCount` of 0 and an empty `keyframes` mean *not reported for this
 container*, never *empty*: only ISO base media carries a sync-sample table, and
-only it and AVI and Ogg count samples at all. A caller testing for an empty file
-should look at the duration.
-
-`sampleCount` of 0 and an empty `keyframes` mean *not reported for this
-container*, never *empty*: only ISO base media carries a sync-sample table, and
-only it, AVI and Ogg count samples at all. A caller testing whether a file holds
-anything should look at the duration.
+only it, AVI and Ogg count samples in a header at all. `codedSampleCount` walks
+and answers for every container, at the cost of the walk.
 
 Codec identifiers are reported as the four-character codes MP4 uses, whichever
 container they came from: a Matroska `V_MPEG4/ISO/AVC` reads as `avc1`, so a

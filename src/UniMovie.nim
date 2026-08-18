@@ -17,8 +17,16 @@ import UniMovie/mpegts
 import UniMovie/ogg
 import UniMovie/mux
 import UniMovie/probe
-export types, matroska, avi, mpegts, ogg, probe, mux
-export isobmff except readMovie, readMovieFile
+# `probe` is the one that dispatches on the file's own bytes, so its
+# `readMovie`, `codedSample` and `codedSampleCount` are the ones this umbrella
+# offers; the per-container versions stay reachable by importing that module
+# directly. Exporting both would make every call ambiguous.
+export types, probe, mux
+export isobmff except readMovie, readMovieFile, codedSample, codedSampleCount
+export matroska except codedSample, codedSampleCount
+export avi except codedSample, codedSampleCount
+export mpegts except codedSample, codedSampleCount
+export ogg except codedSample, codedSampleCount
 
 const UniMovieVersion* = "0.1.0"
 

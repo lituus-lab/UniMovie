@@ -66,6 +66,25 @@ nbCode:
     movie.tracks[movie.videoTrack].codec
 
 nbText: """
+The same call works whatever the container turns out to be, and what comes back
+is the form that container stores — an MP4 gives length-prefixed units where a
+transport stream gives start codes. What differs sharply is the cost: ISO base
+media reads an offset from a table, while the others index nothing and have to
+be walked.
+"""
+
+nbCode:
+  for name in ["tiny.mp4", "tiny.mkv", "tiny.webm", "tiny.avi", "tiny.ts",
+               "tiny.ogv"]:
+    let bytes = readFile(currentSourcePath.parentDir.parentDir / "tests" /
+                         "fixtures" / name)
+    let shape = readMovie(bytes)
+    let video = shape.videoTrack
+    echo name, ": ", codedSampleCount(bytes, video), " samples, first is ",
+      codedSample(bytes, video, 0).len, " bytes of ",
+      shape.tracks[video].codec
+
+nbText: """
 Turning them into pixels belongs to a backend the application registers — on
 macOS VideoToolbox, on Windows Media Foundation, elsewhere an `ffmpeg` the user
 installed. That is what keeps a patented decoder out of this library and out of
