@@ -281,3 +281,39 @@ suite "a file is read box by box, not swallowed whole":
   test "a path that cannot be opened raises IOError, not MovieError":
     expect IOError:
       discard readMovieHeaderFile(getTempDir() / "unimovie-absent-file.mp4")
+
+suite "a file with no ftyp box is still a movie":
+  # `ftyp` arrived with MP4 and QuickTime predates it. A phone still writes
+  # `.mov` files that open `wide`/`mdat` with `moov` at the end and no brand
+  # anywhere; on one real camera roll that was 99 of 863 videos, every one of
+  # them refused. What says a file is a movie is `moov`.
+  test "it reads, and reports the same shape as the file it came from":
+    let plain = readMovieFile(Fixtures / "tiny.mp4")
+    let brandless = readMovieFile(Fixtures / "noftyp.mov")
+    check brandless.format == "mov"
+    check brandless.tracks.len == plain.tracks.len
+    check brandless.duration == plain.duration
+    check brandless.timescale == plain.timescale
+    let a = plain.tracks[plain.videoTrack]
+    let b = brandless.tracks[brandless.videoTrack]
+    check b.codec == a.codec
+    check (b.codedWidth, b.codedHeight) == (a.codedWidth, a.codedHeight)
+    check b.sampleCount == a.sampleCount
+
+  test "its samples come out byte for byte":
+    let plain = readFile(Fixtures / "tiny.mp4")
+    let brandless = readFile(Fixtures / "noftyp.mov")
+    let count = codedSampleCount(brandless, 0)
+    check count == codedSampleCount(plain, 0)
+    for sample in 0 ..< count:
+      check codedSample(brandless, 0, sample) == codedSample(plain, 0, sample)
+
+  test "the container is still recognised from its bytes":
+    check sniffFile(Fixtures / "noftyp.mov") == cIsoBmff
+
+  test "a file with neither ftyp nor moov is refused":
+    let target = getTempDir() /
+      ("unimovie-neither-" & $getCurrentProcessId() & ".mov")
+    defer: removeFile(target)
+    writeFile(target, "\0\0\0\x08wide\0\0\0\x08free")
+    expect MovieError: discard readMovieFile(target)
