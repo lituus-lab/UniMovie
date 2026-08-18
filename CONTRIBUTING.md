@@ -30,9 +30,9 @@ optional. A space separates the colon from the description.
 
 ```
 feat: add the keyframe index to the C ABI
-fix(c_api): clamp negative index instead of raising
-docs: clarify clone map
-feat(core)!: drop the old accumulator API
+fix(c_api): refuse a negative track index instead of reading past
+docs: state what an empty keyframe list means
+feat(probe)!: report the container name from umov_probe
 ```
 
 The `commitizen` CI job blocks the PR if any non-merge commit — or the PR
@@ -67,4 +67,5 @@ pre-commit run --all-files
 ## Conventions
 
 See `ADRs/0004` and `AGENTS.md`. English comments, terse, describe what is done.
-NimContracts compiled away under `-d:release`; the C ABI clamps, never raises.
+NimContracts compiled away under `-d:release`; the C ABI never raises — it
+returns a status and rejects out-of-range input, never clamping it into range.

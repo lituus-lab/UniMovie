@@ -1,25 +1,42 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 lituus-lab -->
-# ADR-0001: Acyclic DAG + anti-cycle invariants
+# ADR-0001: Where UniMovie sits, and what it may import
 
 - Status: Accepted
-- Date: 2026-07-15
-- Scope: every `Uni*` repo
+- Date: 2026-08-18
+- Scope: UniMovie
 
 ## Decision
 
-Family dependencies form a strictly acyclic DAG (layers 0–7); a library
-depends only on lower layers. Topological order = build order. A back-edge is
-rejected in review and fails CI.
+UniMovie is a leaf: it depends on no other `Uni*` engine. Demultiplexing a
+container is byte handling and integer arithmetic, so there is nothing for a
+numeric or geometric layer to contribute, and an engine that pulled one in
+would make every consumer carry it — UniMedia catalogues a library by reading
+headers, and should not link a matrix package to do it.
 
-## Invariants
+Family dependencies form a strictly acyclic graph; a library depends only on
+lower layers, and a back-edge fails CI. `nimble checkVGraph` enforces both that
+rule and the internal one below.
 
-1. Layer-0 primitives have no domain dependency (`UniColor`, `UniMIDI` → none).
-2. Type modules never import algorithm modules within a library
-   (`types/` ↛ `algorithms/`; `io/` → `types/` only).
-3. `UniLinalg` is a repo above `UniMath`; `UniGeom` consumes it, no redefined Vec.
-4. No library depends on an app. Apps may depend on anything below.
-5. Optional deps (`nimsimd`, `NimContracts`) stay optional — never a hard edge.
+## Internal layers
 
-Extraction into its own repo requires a consumer wanting the piece *without*
-the parent's main subject; else one repo with a documented internal DAG.
+`vgraph.cfg` declares them, lowest first:
+
+```
+types < isobmff < matroska < avi < mpegts < ogg < probe < c_api
+```
+
+`types` holds what a demuxer reports and the ceilings every reader checks
+against; one module per container family sits above it, none of them importing
+another; `probe` dispatches over all of them; `c_api` is the shell. A container
+reader that imported a sibling would mean one format's quirk had leaked into
+another's parser.
+
+## What stays out
+
+No decoder, and no system API. A track reports the code its samples are in and
+hands the bytes over unchanged; producing pixels belongs to a backend the
+application registers. That is what keeps a patented decoder out of this
+library and out of everything that links it.
+
+The one exception is stated in ADR-0003.
