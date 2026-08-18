@@ -8,11 +8,18 @@
 
 ## Decision
 
-UniMovie is a leaf: it depends on no other `Uni*` engine. Demultiplexing a
-container is byte handling and integer arithmetic, so there is nothing for a
-numeric or geometric layer to contribute, and an engine that pulled one in
-would make every consumer carry it — UniMedia catalogues a library by reading
-headers, and should not link a matrix package to do it.
+UniMovie depends on `UniImage`, and on nothing else in the family.
+
+The edge exists for one thing: the ISOBMFF box reader. HEIF is the same box
+structure as MP4, `UniImage` already walks it to find an Exif item, and a second
+walker here would be the same algorithm maintained twice — so `boxes` and
+`findBox` come from there.
+
+Nothing else is taken. Demultiplexing is byte handling and integer arithmetic,
+so there is nothing for a numeric or geometric layer to contribute, and an
+engine that pulled one in would make every consumer carry it — UniMedia
+catalogues a library by reading headers, and should not link a matrix package to
+do it.
 
 Family dependencies form a strictly acyclic graph; a library depends only on
 lower layers, and a back-edge fails CI. `nimble checkVGraph` enforces both that
