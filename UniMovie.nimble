@@ -40,6 +40,7 @@ task test, "Nim tests (debug, contracts active)":
   exec "nim c -r --path:src -o:build/test_samples tests/test_samples.nim"
   exec "nim c -r --path:src -o:build/test_fragment tests/test_fragment.nim"
   exec "nim c -r --path:src -o:build/test_mkvmux tests/test_mkvmux.nim"
+  exec "nim c -r --path:src -o:build/test_lacing tests/test_lacing.nim"
 
 task testRelease, "Nim tests (release, contracts compiled away)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
@@ -48,6 +49,7 @@ task testRelease, "Nim tests (release, contracts compiled away)":
   exec "nim c -r -d:release --path:src -o:build/test_samples_rel tests/test_samples.nim"
   exec "nim c -r -d:release --path:src -o:build/test_fragment_rel tests/test_fragment.nim"
   exec "nim c -r -d:release --path:src -o:build/test_mkvmux_rel tests/test_mkvmux.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_lacing_rel tests/test_lacing.nim"
 
 task testCi, "Nim tests (CI subset, debug)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
@@ -56,6 +58,7 @@ task testCi, "Nim tests (CI subset, debug)":
   exec "nim c -r --path:src -o:build/test_samples tests/test_samples.nim"
   exec "nim c -r --path:src -o:build/test_fragment tests/test_fragment.nim"
   exec "nim c -r --path:src -o:build/test_mkvmux tests/test_mkvmux.nim"
+  exec "nim c -r --path:src -o:build/test_lacing tests/test_lacing.nim"
 
 task testCiRelease, "Nim tests (CI subset, release)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
@@ -64,6 +67,7 @@ task testCiRelease, "Nim tests (CI subset, release)":
   exec "nim c -r -d:release --path:src -o:build/test_samples_rel tests/test_samples.nim"
   exec "nim c -r -d:release --path:src -o:build/test_fragment_rel tests/test_fragment.nim"
   exec "nim c -r -d:release --path:src -o:build/test_mkvmux_rel tests/test_mkvmux.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_lacing_rel tests/test_lacing.nim"
 
 task testAll, "debug + release + C ABI":
   exec "nimble test"
@@ -147,7 +151,8 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   rmDir "coverage"
   rmFile "lcov.info"
   var traces: seq[string]
-  for suite in ["isobmff", "probe", "mux", "samples", "fragment", "mkvmux"]:
+  for suite in ["isobmff", "probe", "mux", "samples", "fragment", "mkvmux",
+                "lacing"]:
     let cache = "build/covcache_" & suite
     rmDir cache
     exec "nim c --path:src --nimcache:" & cache &
