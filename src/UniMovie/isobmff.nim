@@ -312,13 +312,19 @@ proc readMovie*(data: string): Movie {.contractual.} =
   body:
     if data.len < 8: raise newException(MovieError, "mp4: too short to be a file")
     let reader = Reader(data: data)
+    # `ftyp` names the format, and a file may not have one: it arrived with
+    # MP4, and QuickTime predates it. A phone still writes `.mov` files that
+    # begin `wide`/`mdat` with `moov` at the end and no brand anywhere, and
+    # refusing those would refuse a tenth of a real camera roll. What actually
+    # says this is a movie is `moov`, checked below.
     let ftyp = findBox(reader.bytes, 0, data.len, ["ftyp"])
-    if ftyp.body < 0 or ftyp.body + 4 > ftyp.bodyEnd:
-      raise newException(MovieError, "mp4: no ftyp box")
-    # The major brand names the format. `qt  ` is QuickTime, which shares the
-    # box structure and differs only in which brands and codecs appear.
-    let brand = reader.fourCC(ftyp.body)
-    result.format = if brand == "qt  ": "mov" else: brand.strip(chars = {' '})
+    if ftyp.body >= 0 and ftyp.body + 4 <= ftyp.bodyEnd:
+      # `qt  ` is QuickTime, which shares the box structure and differs only in
+      # which brands and codecs appear.
+      let brand = reader.fourCC(ftyp.body)
+      result.format = if brand == "qt  ": "mov" else: brand.strip(chars = {' '})
+    else:
+      result.format = "mov"
 
     let moov = findBox(reader.bytes, 0, data.len, ["moov"])
     if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
