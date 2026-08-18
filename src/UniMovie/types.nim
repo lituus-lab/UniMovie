@@ -60,7 +60,22 @@ type
     width*, height*: int ## pixels, video only
     rotation*: Rotation
     sampleCount*: int
-    keyframes*: seq[int] ## indices into the sample table, ascending
+      ## Coded samples in the track, or 0 when the container does not say.
+      ##
+      ## **Zero means unknown, not empty.** ISO base media and AVI count them
+      ## from their own tables and Ogg from its packets; Matroska and MPEG-TS
+      ## keep the count nowhere but in the media itself, which this reader does
+      ## not walk. A caller asking "is there anything here" should look at the
+      ## duration.
+    keyframes*: seq[int]
+      ## Indices into the sample table at which decoding may start, ascending.
+      ##
+      ## **Empty means unknown, not none.** Only ISO base media reports them,
+      ## from `stss` — and there an absent table means every sample is a
+      ## keyframe, so the sequence is filled rather than left empty. For every
+      ## other container it stays empty, because the index lives where this
+      ## reader does not go: Matroska's Cues, AVI's per-chunk flags, a transport
+      ## stream's random-access indicator.
 
   Movie* = object
     ## Everything a probe reports about a file.

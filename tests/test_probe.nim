@@ -170,3 +170,25 @@ suite "ogg":
   test "bytes with no page at the start are refused":
     expect MovieError:
       discard readOgg("OggT not a page")
+
+suite "unknown is not empty":
+  test "only ISO base media reports keyframes, and never reports none":
+    # An empty keyframes sequence means the container does not carry the index,
+    # not that the track has no seekable point. ISO base media is the one that
+    # does carry it, and there an absent stss means every sample qualifies.
+    for name in ["tiny.mp4", "av.mp4", "rotated.mov"]:
+      let movie = readMovieFile(Fixtures / name)
+      for track in movie.tracks:
+        check track.keyframes.len > 0
+    for name in ["tiny.mkv", "tiny.webm", "tiny.avi", "tiny.ts", "tiny.ogv"]:
+      let movie = readMovieFile(Fixtures / name)
+      for track in movie.tracks:
+        check track.keyframes.len == 0
+
+  test "a duration is reported even where the sample count is not":
+    # Which is why the duration, not the sample count, is what says whether a
+    # file holds anything.
+    for name in ["tiny.mkv", "tiny.ts"]:
+      let movie = readMovieFile(Fixtures / name)
+      check movie.tracks[0].sampleCount == 0
+      check movie.durationSeconds > 0.5
