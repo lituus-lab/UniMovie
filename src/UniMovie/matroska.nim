@@ -405,10 +405,16 @@ proc trackNumbers(data: string): seq[int] =
       for trackId, trackAt, trackSize in tracks.elements:
         if trackId != idTrackEntry: continue
         var entry = Cursor(data: data, at: trackAt, limit: trackAt + trackSize)
+        # One value per entry, whether or not it carries a number: `readMovie`
+        # keeps every entry, and a caller addresses a track by its position in
+        # that list. Skipping a numberless entry here would shift every track
+        # after it onto the wrong samples.
+        var number = 0 # no Matroska track is numbered 0, so nothing matches it
         for entryId, entryAt, entrySize in entry.elements:
           if entryId == idTrackNumber:
-            result.add int(entry.readUInt(entryAt, entrySize))
+            number = int(entry.readUInt(entryAt, entrySize))
             break
+        result.add number
     break
 
 proc codedSample*(data: string; trackIndex, sampleIndex: int): string
@@ -447,5 +453,383 @@ proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
     if trackIndex >= numbers.len:
       raise newException(MovieError, "mkv: track index past the file")
     for span in trackFrames(data, numbers[trackIndex]): inc result
+
+
+# Writing. The same EBML the reader above walks, assembled rather than parsed.
+#
+# Matroska keeps one clock for the whole file where ISO base media gives each
+# track its own, so a track's timestamps are converted into the segment's
+# units on the way in. That conversion is the only place this writer is lossy,
+# and at the usual millisecond scale it costs under half a millisecond per
+# timestamp.
+
+import std/streams
+# Maths comes from UniMath, never std/math: one façade for the family, so a
+# rounding rule that has to change changes in one place.
+import UniMath/native_float
+
+const
+  DefaultTimestampScaleNs = 1_000_000'i64
+    ## A millisecond, which is what every file anyone writes uses.
+  MaxClusterSpan = 30_000
+    ## A block's timestamp is stored as a signed 16-bit offset from its
+    ## cluster's, so a cluster cannot span more than 32767 units. Broken well
+    ## short of that, since a cluster is also the unit a player seeks to.
+  idTrackUid = 0x73C5'i64
+  idFlagLacing = 0x9C'i64
+  idAudio = 0xE1'i64
+  idSamplingFrequency = 0xB5'i64
+  idChannels = 0x9F'i64
+  idClusterTimestamp = 0xE7'i64
+  idMuxingApp = 0x4D80'i64
+  idWritingApp = 0x5741'i64
+  idEbmlVersion = 0x4286'i64
+  idEbmlReadVersion = 0x42F7'i64
+  idEbmlMaxIdLength = 0x42F2'i64
+  idEbmlMaxSizeLength = 0x42F3'i64
+  idDocTypeVersion = 0x4287'i64
+  idDocTypeReadVersion = 0x4285'i64
+  idCues = 0x1C53BB6B'i64
+  idCuePoint = 0xBB'i64
+  idCueTime = 0xB3'i64
+  idCueTrackPositions = 0xB7'i64
+  idCueTrack = 0xF7'i64
+  idCueClusterPosition = 0xF1'i64
+
+func idBytes(id: int64): string =
+  ## An element identifier, as stored. The constants above already carry their
+  ## marker bits, so this only has to write the bytes that are there — which is
+  ## why it counts down from the top rather than choosing a width.
+  var width = 1
+  while width < 8 and (id shr (8 * width)) != 0: inc width
+  for index in countdown(width - 1, 0):
+    result.add char((id shr (8 * index)) and 0xFF)
+
+func sizeBytes(value: int64; width = 0): string =
+  ## An element length. The marker bit is stripped from the value, unlike an
+  ## identifier's — the one asymmetry in EBML.
+  ##
+  ## `width` forces a wider encoding than the value needs, which is how a
+  ## length can be patched later without the box changing size.
+  var found = max(width, 1)
+  if width == 0:
+    # An all-ones payload means "unknown", so a value that would encode as all
+    # ones needs one byte more.
+    while found < 8 and value >= (1'i64 shl (7 * found)) - 1: inc found
+  for index in countdown(found - 1, 0):
+    var byteValue = (value shr (8 * index)) and 0xFF
+    if index == found - 1: byteValue = byteValue or (0x80 shr (found - 1))
+    result.add char(byteValue)
+
+func element(id: int64; payload: string): string =
+  ## One element: its identifier, its length, its payload.
+  idBytes(id) & sizeBytes(int64(payload.len)) & payload
+
+func uintPayload(value: int64): string =
+  ## An unsigned integer, in as few bytes as hold it. Matroska stores 1 in one
+  ## byte, which is most of why its headers are small.
+  if value == 0: return "\0"
+  var width = 1
+  while width < 8 and (value shr (8 * width)) != 0: inc width
+  for index in countdown(width - 1, 0):
+    result.add char((value shr (8 * index)) and 0xFF)
+
+func floatPayload(value: float): string =
+  ## A float, eight bytes, IEEE 754 big-endian.
+  let bits = cast[uint64](value)
+  for index in countdown(7, 0):
+    result.add char((bits shr (8 * index)) and 0xFF)
+
+func longCodec(codec: string): string =
+  ## The Matroska identifier for one of the four-character codes the rest of
+  ## this library speaks — the inverse of `shortCodec`.
+  ##
+  ## A code with no Matroska equivalent is passed through, which produces a
+  ## file naming a codec no player knows. That is better than refusing to write
+  ## it: the caller knows what its samples are, and this is a muxer.
+  case codec
+  of "avc1", "avc3": "V_MPEG4/ISO/AVC"
+  of "hvc1", "hev1": "V_MPEGH/ISO/HEVC"
+  of "av01": "V_AV1"
+  of "vp08": "V_VP8"
+  of "vp09": "V_VP9"
+  of "mp4v": "V_MPEG4/ISO/ASP"
+  of "theo": "V_THEORA"
+  of "mp4a": "A_AAC"
+  of "Opus": "A_OPUS"
+  of "vorb": "A_VORBIS"
+  of "fLaC": "A_FLAC"
+  of "lpcm": "A_PCM/INT/LIT"
+  else: codec
+
+type MatroskaWriter* = object
+  ## An open sink and the cluster being built.
+  ##
+  ## Only one cluster is held, not the file: a cluster is bounded both by the
+  ## span its block timestamps can express and by how far a player should have
+  ## to read after a seek, so it stays small however long the recording.
+  stream: Stream
+  params: seq[TrackParams]
+  scaleNs: int64
+  blocks: string ## the current cluster's blocks, already encoded
+  clusterAt: int64 ## the current cluster's timestamp, in segment units
+  clusterOpen: bool
+  nextTime: seq[int64] ## each track's next timestamp, in its own units
+  shift: seq[int64] ## what the track's edit list asks be added, in its units
+  cues: seq[tuple[time: int64; track: int; position: int64]]
+  segmentSizeAt: int64 ## where the segment's length sits, for patching
+  segmentBodyAt: int64 ## where its payload starts, which cues count from
+  durationAt: int64 ## where the duration sits, for patching
+  longest: int64 ## the furthest any track has reached, in segment units
+  closed: bool
+  ownsStream: bool
+
+func segmentTicks(writer: MatroskaWriter; track: int; time: int64): int64 =
+  ## A track's own timestamp, in the segment's units.
+  ##
+  ## Rounded rather than truncated: truncating would pull every timestamp
+  ## earlier, and a stream whose frames all land a fraction early drifts
+  ## against one whose do not.
+  let scale = writer.params[track].timescale
+  if scale <= 0: return 0
+  let perSecond = 1_000_000_000'i64 div writer.scaleNs
+  int64(round(float(time) * float(perSecond) / float(scale)))
+
+proc newMatroskaWriter*(stream: Stream; tracks: openArray[TrackParams];
+                        webm = false): MatroskaWriter {.contractual.} =
+  ## Write the EBML header, the segment header and the track list, ready for
+  ## samples.
+  ##
+  ## `webm` writes the restricted doc type, which a browser accepts and which
+  ## says the codecs inside are royalty-free ones. Nothing here checks that
+  ## they are: the caller chose the samples, and a muxer that second-guessed
+  ## the claim would refuse files that are perfectly valid tomorrow.
+  ##
+  ## The segment's length and the duration are written wide and patched at
+  ## `close`, so the stream must be one that can be seeked back into.
+  require:
+    tracks.len in 1 .. MaxWriterTracks
+  body:
+    for track in tracks:
+      if track.kind == tkOther:
+        raise newException(MovieError, "mkv: a track must be video or audio")
+      if track.codec.len == 0:
+        raise newException(MovieError, "mkv: a track needs a codec")
+      if track.timescale notin 1 .. 1_000_000_000:
+        raise newException(MovieError, "mkv: implausible timescale")
+      if track.kind == tkVideo and
+          (track.width notin 1 .. MaxDimension or
+           track.height notin 1 .. MaxDimension):
+        raise newException(MovieError, "mkv: a video track needs its size")
+      if track.configKind == "esds":
+        # Refused on the label the caller already gave, without reading the
+        # bytes. Matroska wants the AudioSpecificConfig that sits inside an
+        # `esds`, not the whole descriptor tree — and handed the tree, ffmpeg
+        # reports "audio object type 0" and drops the track, which is a broken
+        # file that no structural check catches.
+        raise newException(MovieError,
+          "mkv: A_AAC wants the AudioSpecificConfig, not the whole esds")
+    if stream == nil:
+      raise newException(IOError, "mkv: no stream to write to")
+
+    result.stream = stream
+    result.params = @tracks
+    result.scaleNs = DefaultTimestampScaleNs
+    result.nextTime = newSeq[int64](tracks.len)
+    result.shift = newSeq[int64](tracks.len)
+    for index, params in tracks:
+      # Matroska has no edit list. What one says, though, is expressible as a
+      # constant shift of the timestamps, and dropping it instead is what makes
+      # a converted file play out of sync — the offset a reordered stream
+      # begins with stops being cancelled.
+      #
+      # Only a leading empty edit and one trim are mapped, which is every edit
+      # list a real file carries; anything past that is left alone rather than
+      # approximated.
+      for edit in params.edits:
+        if edit.mediaTime < 0:
+          let perSecond = 1_000_000_000'i64 div DefaultTimestampScaleNs
+          result.shift[index] += edit.duration * int64(params.timescale) div
+                                 perSecond
+        else:
+          result.shift[index] -= edit.mediaTime
+          break
+
+    var header = element(idEbmlVersion, uintPayload(1))
+    header.add element(idEbmlReadVersion, uintPayload(1))
+    header.add element(idEbmlMaxIdLength, uintPayload(4))
+    header.add element(idEbmlMaxSizeLength, uintPayload(8))
+    header.add element(idDocType, if webm: "webm" else: "matroska")
+    header.add element(idDocTypeVersion, uintPayload(4))
+    header.add element(idDocTypeReadVersion, uintPayload(2))
+    stream.write(element(idEbml, header))
+
+    # The segment's length is written as eight bytes so the real value fits
+    # wherever it lands; a minimal encoding would have to grow to hold it and
+    # move everything after it.
+    stream.write(idBytes(idSegment))
+    result.segmentSizeAt = int64(stream.getPosition())
+    stream.write(sizeBytes(0, 8))
+    result.segmentBodyAt = int64(stream.getPosition())
+
+    var info = element(idTimestampScale, uintPayload(result.scaleNs))
+    info.add element(idMuxingApp, "UniMovie")
+    info.add element(idWritingApp, "UniMovie")
+    # Written now and patched at close: the duration is not known until the
+    # last sample is in, and a float is a fixed eight bytes either way.
+    let durationOffset = info.len + idBytes(idDuration).len +
+                         sizeBytes(8).len
+    info.add element(idDuration, floatPayload(0.0))
+    let infoElement = element(idInfo, info)
+    result.durationAt = int64(stream.getPosition()) +
+                        int64(infoElement.len - info.len) +
+                        int64(durationOffset)
+    stream.write(infoElement)
+
+    var entries: string
+    for index, params in tracks:
+      var entry = element(idTrackNumber, uintPayload(int64(index + 1)))
+      entry.add element(idTrackUid, uintPayload(int64(index + 1)))
+      entry.add element(idTrackType,
+        uintPayload(if params.kind == tkVideo: 1 else: 2))
+      entry.add element(idCodecId, longCodec(params.codec))
+      # Lacing off: every block this writes holds one frame, so a reader never
+      # has to unpack one.
+      entry.add element(idFlagLacing, uintPayload(0))
+      if params.config.len > 0:
+        entry.add element(idCodecPrivate, params.config)
+      if params.kind == tkVideo:
+        var video = element(idPixelWidth, uintPayload(int64(params.width)))
+        video.add element(idPixelHeight, uintPayload(int64(params.height)))
+        entry.add element(idVideo, video)
+      else:
+        var audio = element(idSamplingFrequency,
+          floatPayload(float(max(params.sampleRate, 1))))
+        audio.add element(idChannels, uintPayload(int64(max(params.channels, 1))))
+        entry.add element(idAudio, audio)
+      entries.add element(idTrackEntry, entry)
+    stream.write(element(idTracks, entries))
+
+proc newMatroskaWriter*(path: string; tracks: openArray[TrackParams];
+                        webm = false): MatroskaWriter {.contractual.} =
+  ## `newMatroskaWriter` over a file.
+  require:
+    path.len > 0
+    tracks.len in 1 .. MaxWriterTracks
+  body:
+    let stream = openFileStream(path, fmWrite)
+    if stream == nil:
+      raise newException(IOError, "mkv: cannot write " & path)
+    result = newMatroskaWriter(stream, tracks, webm)
+    result.ownsStream = true
+
+proc flushCluster*(writer: var MatroskaWriter) {.contractual.} =
+  ## Write the cluster being built. A cluster holding nothing writes nothing.
+  require:
+    not writer.closed
+  body:
+    if not writer.clusterOpen or writer.blocks.len == 0:
+      writer.clusterOpen = false
+      writer.blocks.setLen(0)
+      return
+    var cluster = element(idClusterTimestamp, uintPayload(writer.clusterAt))
+    cluster.add writer.blocks
+    writer.stream.write(element(idCluster, cluster))
+    writer.clusterOpen = false
+    writer.blocks.setLen(0)
+
+proc writeSample*(writer: var MatroskaWriter; track: int;
+                  data: openArray[byte]; duration: int; keyframe = true;
+                  compositionOffset = 0) {.contractual.} =
+  ## Append one frame to `track`, `duration` units of that track's timescale
+  ## long.
+  ##
+  ## **A block's timestamp is when the frame is shown, not when it is decoded**
+  ## — the opposite of ISO base media, where `stts` gives decode times and
+  ## `ctts` the distance to display. So `compositionOffset` is not dropped in
+  ## the conversion: it is added in. Frames still go out in decode order, which
+  ## is the order they arrive; only the timestamps carry the reordering.
+  ##
+  ## Writing decode times here instead produces a file that is well formed,
+  ## reads back sample for sample, and shows a reordered stream's frames in the
+  ## wrong order — which no structural check catches, only decoded pixels.
+  ##
+  ## A cluster is opened on the first frame and closed when a video keyframe
+  ## arrives or when the span a block timestamp can express runs out.
+  require:
+    track >= 0
+    duration >= 0
+  body:
+    if writer.closed: raise newException(MovieError, "mkv: writer is closed")
+    if track >= writer.params.len:
+      raise newException(MovieError, "mkv: track index past the file")
+    if data.len == 0:
+      raise newException(MovieError, "mkv: an empty frame has no meaning")
+
+    let at = writer.segmentTicks(track,
+      writer.nextTime[track] + int64(compositionOffset) + writer.shift[track])
+    # A reordered stream puts a frame before its cluster's own timestamp, which
+    # a signed offset holds; the break is on the distance either way, not on
+    # the direction.
+    if writer.clusterOpen and
+        (abs(at - writer.clusterAt) > MaxClusterSpan or
+         (keyframe and writer.params[track].kind == tkVideo)):
+      writer.flushCluster()
+    if not writer.clusterOpen:
+      writer.clusterAt = at
+      writer.clusterOpen = true
+      if keyframe:
+        writer.cues.add (at, track + 1,
+          int64(writer.stream.getPosition()) - writer.segmentBodyAt)
+
+    var block1 = sizeBytes(int64(track + 1))
+    let offset = int16(at - writer.clusterAt)
+    block1.add char((offset shr 8) and 0xFF)
+    block1.add char(offset and 0xFF)
+    block1.add char(if keyframe: 0x80 else: 0x00)
+    let start = block1.len
+    block1.setLen(start + data.len)
+    copyMem(addr block1[start], unsafeAddr data[0], data.len)
+    writer.blocks.add element(idSimpleBlock, block1)
+
+    writer.nextTime[track] += int64(duration)
+    let reached = writer.segmentTicks(track, writer.nextTime[track])
+    if reached > writer.longest: writer.longest = reached
+
+proc close*(writer: var MatroskaWriter) {.contractual.} =
+  ## Flush the last cluster, write the cue index, and patch the segment's
+  ## length and duration.
+  require:
+    not writer.closed
+  body:
+    writer.flushCluster()
+    writer.closed = true
+
+    if writer.cues.len > 0:
+      var points: string
+      for cue in writer.cues:
+        var positions = element(idCueTrack, uintPayload(int64(cue.track)))
+        positions.add element(idCueClusterPosition, uintPayload(cue.position))
+        var point = element(idCueTime, uintPayload(cue.time))
+        point.add element(idCueTrackPositions, positions)
+        points.add element(idCuePoint, point)
+      writer.stream.write(element(idCues, points))
+
+    let endAt = int64(writer.stream.getPosition())
+    writer.stream.setPosition(int(writer.durationAt))
+    writer.stream.write(floatPayload(float(writer.longest)))
+    writer.stream.setPosition(int(writer.segmentSizeAt))
+    writer.stream.write(sizeBytes(endAt - writer.segmentBodyAt, 8))
+    writer.stream.setPosition(int(endAt))
+    if writer.ownsStream: writer.stream.close()
+
+func trackCount*(writer: MatroskaWriter): int =
+  ## How many tracks the writer was opened for.
+  writer.params.len
+
+func clusterCount*(writer: MatroskaWriter): int =
+  ## How many cue points have been recorded — one per cluster that opened on a
+  ## keyframe, which is what a player seeks to.
+  writer.cues.len
 
 

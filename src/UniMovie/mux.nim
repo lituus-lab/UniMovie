@@ -22,9 +22,6 @@ import UniImage/exif/isobmff
 import ./types
 
 const
-  MaxWriterTracks* = 8
-    ## More than a muxer built for a camera or a renderer needs. A caller
-    ## asking for more is refused rather than allocated for.
   MaxWriterSamples* = 1 shl 24
     ## Sixteen million samples is days of video. The bound is on the sample
     ## table this holds in memory, not on the media written past it.
@@ -33,34 +30,6 @@ const
     ## a caller asking for more is refused rather than allocated for.
 
 type
-  TrackParams* = object
-    ## What a track is, before any sample of it exists.
-    kind*: TrackKind
-    codec*: string
-      ## The four-character code the sample entry is named after — `avc1`,
-      ## `hvc1`, `av01`, `mp4a`, `alac`. It is what a reader reports and what a
-      ## decoder backend is registered under, so it must match the bytes.
-    timescale*: int
-      ## Units per second every timestamp of this track is counted in. A video
-      ## track usually takes the frame rate times a small factor so that a
-      ## variable frame interval stays exact; audio takes the sample rate.
-    width*, height*: int ## pixels; video only
-    channels*: int ## audio only
-    sampleRate*: int ## audio only, in hertz
-    configKind*: string
-      ## The four-character name of the codec configuration box inside the
-      ## sample entry — `avcC` for H.264, `hvcC` for HEVC, `av1C` for AV1,
-      ## `esds` for AAC, `alac` for Apple Lossless. Empty writes no such box,
-      ## which suits a codec that needs none.
-    config*: string
-      ## That box's payload, exactly as the encoder produced it. Never parsed
-      ## here: a parameter set is the decoder's business, and copying it
-      ## unexamined is what keeps this a muxer.
-    edits*: seq[Edit]
-      ## The track's edit list, or empty for none — which is what a track whose
-      ## media starts at zero and plays through wants, and writes no `edts` box
-      ## at all.
-
   Sample = object
     size: int
     offset: int64
