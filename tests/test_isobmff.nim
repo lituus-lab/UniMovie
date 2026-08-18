@@ -6,7 +6,7 @@
 ## shape below is compared with what ffprobe reports for the same file, not with
 ## what this reader produced last time. The fixtures come from ffmpeg and are a
 ## few kilobytes each — the container is under test, never the codec.
-import std/[unittest, os, osproc, strutils]
+import std/[unittest, os, osproc, strutils, tables]
 import UniMovie
 
 const Fixtures = currentSourcePath.parentDir / "fixtures"
@@ -164,3 +164,67 @@ suite "what the contracts promise":
     # returning an empty presentation.
     for name in ["tiny.mp4", "av.mp4", "rotated.mov"]:
       check readMovieFile(Fixtures / name).tracks.len > 0
+
+suite "the edit list, which a faithful remux cannot drop":
+  test "the fixtures' edit lists are the ones ffmpeg reports":
+    # Each of these cancels something. The video ones cancel the constant
+    # composition offset a reordered stream begins with; av.mp4's audio one
+    # trims the 1024 samples of encoder priming an AAC stream starts with.
+    let cases = {"av.mp4": @[(44100'i64, 4096'i64), (44100'i64, 1024'i64)],
+                 "tiny.mp4": @[(1000'i64, 2048'i64)],
+                 "rotated.mov": @[(10240'i64, 4096'i64)]}.toTable
+    for name, expected in cases:
+      let data = readFile(Fixtures / name)
+      for track, want in expected:
+        let edits = editList(data, track)
+        check edits.len == 1
+        check edits[0].duration == want[0]
+        check edits[0].mediaTime == want[1]
+
+  test "a track with no edit list reports none, not a failure":
+    # Written here rather than found: none of the fixtures lacks one.
+    let plain = readFile(Fixtures / "tiny.mp4")
+    let movie = readMovie(plain)
+    let index = movie.videoTrack
+    let timing = sampleTiming(plain, index)
+    let target = getTempDir() /
+      ("unimovie-noedit-" & $getCurrentProcessId() & ".mp4")
+    defer: removeFile(target)
+    var writer = newMp4Writer(target, [TrackParams(kind: tkVideo,
+      codec: movie.tracks[index].codec, timescale: movie.tracks[
+          index].timescale,
+      width: movie.tracks[index].width, height: movie.tracks[index].height)])
+    for sample in 0 ..< movie.tracks[index].sampleCount:
+      let bytes = codedSample(plain, index, sample)
+      var payload = newSeq[byte](bytes.len)
+      for at in 0 ..< bytes.len: payload[at] = byte(bytes[at])
+      writer.writeSample(0, payload, timing[sample].duration)
+    writer.close()
+    check editList(readFile(target), 0).len == 0
+
+  test "a track index past the file raises":
+    let data = readFile(Fixtures / "tiny.mp4")
+    expect MovieError: discard editList(data, 99)
+
+  test "what is written comes back":
+    let plain = readFile(Fixtures / "tiny.mp4")
+    let movie = readMovie(plain)
+    let index = movie.videoTrack
+    let timing = sampleTiming(plain, index)
+    let target = getTempDir() /
+      ("unimovie-roundedit-" & $getCurrentProcessId() & ".mp4")
+    defer: removeFile(target)
+    let wanted = @[Edit(duration: 250, mediaTime: -1),
+                   Edit(duration: 750, mediaTime: 2048)]
+    var writer = newMp4Writer(target, [TrackParams(kind: tkVideo,
+      codec: movie.tracks[index].codec, timescale: movie.tracks[
+          index].timescale,
+      width: movie.tracks[index].width, height: movie.tracks[index].height,
+      edits: wanted)])
+    for sample in 0 ..< movie.tracks[index].sampleCount:
+      let bytes = codedSample(plain, index, sample)
+      var payload = newSeq[byte](bytes.len)
+      for at in 0 ..< bytes.len: payload[at] = byte(bytes[at])
+      writer.writeSample(0, payload, timing[sample].duration)
+    writer.close()
+    check editList(readFile(target), 0) == wanted

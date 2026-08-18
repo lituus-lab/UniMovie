@@ -16,12 +16,24 @@ somebody else encoded, and never produces one. That is the same boundary the
 reading half keeps: ISO 14496-12 describes the container and nothing here
 implements a codec.
 
+`newFragmentedMp4Writer` writes the same boxes in the order a live stream
+needs: `moov` first with empty tables and a `mvex` saying fragments follow,
+then a `moof`/`mdat` pair per fragment, each carrying its own small table. It
+never seeks back, so it writes to a pipe as readily as to a file, and it holds
+only the fragment being built rather than the whole sample table. Where a
+fragment breaks is the caller's decision — one that does not start on a
+keyframe cannot be played on its own, which is most of the reason to write one.
+
 A track may carry an edit list, which is how a presentation says something
 other than *play the media from its start*. Two shapes cover nearly every use:
 an empty edit holds a track blank so one that starts late stays in sync, and a
 trim starts playback partway in — which is what cancels the display offset a
 reordered stream begins with. A track given no edits writes no `edts` box, and
 that absence says the same thing as an edit that plays everything.
+`editList` reads one back, which a remux needs: a track whose edit list is
+dropped plays at a different time from the one it was written to play at, and
+that shows up as sound and picture drifting apart rather than as a malformed
+file. On a fragmented file the box is written but ffmpeg does not apply it.
 
 The file that comes out does hold a coded stream, so whoever ran the encoder
 carries whatever obligation that stream carries. A caller with a system encoder
