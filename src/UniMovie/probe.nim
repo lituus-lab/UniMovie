@@ -46,6 +46,22 @@ func reads*(container: Container): bool =
   ## Whether this build demultiplexes that container.
   container != cUnknown
 
+proc sniffFile*(path: string): Container {.contractual.} =
+  ## Identify a file's container from its first bytes, reading only those.
+  require:
+    path.len > 0
+  body:
+    var handle: File
+    if not handle.open(path):
+      raise newException(IOError, "cannot open " & path)
+    defer: handle.close()
+    # Enough packets for a transport stream's rhythm to show: eight at the
+    # largest packet size, plus room for the offset a .m2ts starts at.
+    var head = newString(4096)
+    let read = handle.readBuffer(addr head[0], 4096)
+    head.setLen(read)
+    sniff(head)
+
 proc readMovie*(data: string): Movie {.contractual.} =
   ## Demultiplex whatever the bytes turn out to be.
   ##
@@ -126,22 +142,11 @@ proc readMovieFile*(path: string): Movie {.contractual.} =
   ensure:
     result.tracks.len > 0
   body:
-    readMovie(readFile(path))
-
-proc sniffFile*(path: string): Container {.contractual.} =
-  ## Identify a file's container from its first bytes, reading only those.
-  require:
-    path.len > 0
-  body:
-    var handle: File
-    if not handle.open(path):
-      raise newException(IOError, "cannot open " & path)
-    defer: handle.close()
-    # Enough packets for a transport stream's rhythm to show: eight at the
-    # largest packet size, plus room for the offset a .m2ts starts at.
-    var head = newString(4096)
-    let read = handle.readBuffer(addr head[0], 4096)
-    head.setLen(read)
-    sniff(head)
+    # An ISO base media file is read box by box, so a recording of any size
+    # costs its `moov` rather than its media. The others are read whole: their
+    # parsers are bounded by lengths the file declares, and a truncated buffer
+    # makes them stop at the damage rather than read what is there.
+    if sniffFile(path) == cIsoBmff: readMovieHeaderFile(path)
+    else: readMovie(readFile(path))
 
 

@@ -74,7 +74,7 @@ may be decoded here without that reservation.
 
 | Container | Limitations |
 |---|---|
-| MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
+| MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Read box by box from a file, so a probe costs `moov` rather than the media. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
 | Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements, and the coded bytes of any frame by walking the Clusters. No keyframe index — Cues would give one. `newMatroskaWriter` writes the format as well as reads it. |
 | AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`, and the coded bytes of any chunk by walking `movi`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags. |
 | MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps, and the coded bytes of any access unit by reassembling its PES packets. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
@@ -84,6 +84,12 @@ may be decoded here without that reservation.
 container*, never *empty*: only ISO base media carries a sync-sample table, and
 only it, AVI and Ogg count samples in a header at all. `codedSampleCount` walks
 and answers for every container, at the cost of the walk.
+
+A video track reports two sizes. `width`/`height` are how wide and tall it
+should be **shown**; `codedWidth`/`codedHeight` are how many pixels the decoder
+produces, which is what `ffprobe`'s `width`/`height` report. They differ by the
+sample aspect ratio: a track with a 16:15 one is 64 pixels wide and 68 wide on
+screen. Compare a decoded frame against the coded pair — the other stretches it.
 
 Codec identifiers are reported as the four-character codes MP4 uses, whichever
 container they came from: a Matroska `V_MPEG4/ISO/AVC` reads as `avc1`, so a

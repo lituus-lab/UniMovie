@@ -62,7 +62,18 @@ type
     codec*: string ## the container's own code, e.g. "avc1", "hvc1", "av01"
     timescale*: int ## units per second the durations below are in
     duration*: int64 ## in `timescale` units; 0 when the file does not say
-    width*, height*: int ## pixels, video only
+    width*, height*: int
+      ## How wide and tall the track should be **displayed**, in pixels; video
+      ## only. Not always what the decoder produces: a track whose pixels are
+      ## not square says so, and the two differ by that ratio.
+    codedWidth*, codedHeight*: int
+      ## How many pixels the decoder produces, from the sample entry; video
+      ## only, and 0 where the container does not say.
+      ##
+      ## **This is the pair to compare with a decoded frame**, and the one
+      ## `ffprobe`'s `width`/`height` report. A file with a 16:15 sample aspect
+      ## is 718 pixels wide and 765 wide on screen, and using the wrong one
+      ## stretches every thumbnail made from it.
     rotation*: Rotation
     sampleCount*: int
       ## Coded samples in the track, or 0 when the container does not say.
