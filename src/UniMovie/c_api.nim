@@ -8,11 +8,13 @@
 ## and puts the reason in `umov_last_error`. Out-of-range input is rejected,
 ## never clamped into range.
 
+import std/times
 import ./types
 import ./probe
 import ./isobmff as bmff
 import ./matroska as mkv
 import ./mux
+import ./edit as movieEdit
 
 const UniMovieVersion = "0.1.0"
 
@@ -24,17 +26,17 @@ type MovieStatus = enum
 
 var lastError {.threadvar.}: string
 
-proc umov_version(): cstring {.exportc, cdecl, dynlib.} =
+proc umov_version(): cstring {.exportc, cdecl, dynlib, raises: [].} =
   ## Static version string; do not free.
   cstring(UniMovieVersion)
 
-proc umov_last_error(): cstring {.exportc, cdecl, dynlib.} =
+proc umov_last_error(): cstring {.exportc, cdecl, dynlib, raises: [].} =
   ## Most recent failure on this thread, "" when there is none.
   cstring(lastError)
 
 proc umov_probe(path: cstring; trackCount, videoIndex, audioIndex: ptr cint;
                 durationSeconds: ptr cdouble; format: ptr array[16, char]): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## Shape of a container: how many tracks, which is the first video and audio
   ## one (-1 when absent), the playing time in seconds, and the container's own
   ## name — "mp4", "mov", "matroska", "webm", "avi".
@@ -65,14 +67,14 @@ proc umov_probe(path: cstring; trackCount, videoIndex, audioIndex: ptr cint;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 proc umov_track(path: cstring; index: cint; kind: ptr cint;
                 codec: ptr array[5, char]; width, height, rotation: ptr cint;
                 sampleCount, keyframeCount: ptr cint): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## One track's shape. `kind` is 0 video, 1 audio, 2 other. `codec` receives
   ## the container's own four-character code and a terminating zero, so the
   ## caller supplies five bytes. `rotation` is clockwise **degrees** — 0, 90,
@@ -109,7 +111,7 @@ proc umov_track(path: cstring; index: cint; kind: ptr cint;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
@@ -117,7 +119,7 @@ proc umov_track(path: cstring; index: cint; kind: ptr cint;
 
 proc umov_track_sizes(path: cstring; index: cint;
                       codedWidth, codedHeight: ptr cint): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## The size a track's decoder produces, which is not always the size it is
   ## shown at: `umov_track` reports the display one, and the two differ by the
   ## sample aspect ratio. Compare a decoded frame against this pair.
@@ -144,12 +146,12 @@ proc umov_track_sizes(path: cstring; index: cint;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 proc umov_sniff(path: cstring; format: ptr array[16, char]): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## Which container a file is, from its leading bytes only — "mp4",
   ## "matroska", "avi", "mpegts", "ogg", or "unknown".
   ##
@@ -167,12 +169,12 @@ proc umov_sniff(path: cstring; format: ptr array[16, char]): cint
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 proc umov_coded_sample_count(path: cstring; track: cint; count: ptr cint): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## How many coded samples a track holds.
   ##
   ## ISO base media reads this from a table; every other container has to be
@@ -194,13 +196,13 @@ proc umov_coded_sample_count(path: cstring; track: cint; count: ptr cint): cint
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 proc umov_coded_sample(path: cstring; track, index: cint; buffer: ptr uint8;
                        capacity: csize_t; written: ptr csize_t): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## The coded bytes of one sample, exactly as the file holds them.
   ##
   ## Two calls: pass a null `buffer` to learn the size, then call again with
@@ -235,13 +237,13 @@ proc umov_coded_sample(path: cstring; track, index: cint; buffer: ptr uint8;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 proc umov_sample_timing(path: cstring; track: cint; durations,
                         compositionOffsets: ptr cint; capacity: cint;
-                        written: ptr cint): cint {.exportc, cdecl, dynlib.} =
+                        written: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
   ## Per-sample decode duration and composition offset, in the track's own
   ## timescale. ISO base media only; another container reports zero samples.
   ##
@@ -281,13 +283,13 @@ proc umov_sample_timing(path: cstring; track: cint; durations,
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 proc umov_edit_list(path: cstring; track: cint; durations,
                     mediaTimes: ptr int64; capacity: cint;
-                    written: ptr cint): cint {.exportc, cdecl, dynlib.} =
+                    written: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
   ## A track's edit list — what it says about when its media plays. ISO base
   ## media only; another container reports none.
   ##
@@ -330,7 +332,7 @@ proc umov_edit_list(path: cstring; track: cint; durations,
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
@@ -411,7 +413,7 @@ proc toTrackParams(source: UmovTrackParams): TrackParams =
 
 proc umov_writer_open(path: cstring; kind: cint;
                       tracks: ptr UmovTrackParams; trackCount: cint;
-                      handle: ptr cint): cint {.exportc, cdecl, dynlib.} =
+                      handle: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
   ## Open a writer of one of four shapes: a whole MP4, a fragmented one, a
   ## Matroska, or a WebM.
   ##
@@ -468,7 +470,7 @@ proc umov_writer_open(path: cstring; kind: cint;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrArg)
 
@@ -486,7 +488,7 @@ proc slotOf(handle: cint): int =
 
 proc umov_writer_sample(handle, track: cint; data: ptr uint8; length: csize_t;
                         duration, keyframe, compositionOffset: cint): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## Append one coded sample to a track, `duration` units of that track's
   ## timescale long.
   ##
@@ -527,11 +529,11 @@ proc umov_writer_sample(handle, track: cint; data: ptr uint8; length: csize_t;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrArg)
 
-proc umov_writer_flush(handle: cint): cint {.exportc, cdecl, dynlib.} =
+proc umov_writer_flush(handle: cint): cint {.exportc, cdecl, dynlib, raises: [].} =
   ## End the current fragment or cluster, so what has been written so far can
   ## be played on its own.
   ##
@@ -551,11 +553,11 @@ proc umov_writer_flush(handle: cint): cint {.exportc, cdecl, dynlib.} =
       writers[index].matroska.flushCluster()
     lastError = ""
     result = cint(umovOk)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrArg)
 
-proc umov_writer_close(handle: cint): cint {.exportc, cdecl, dynlib.} =
+proc umov_writer_close(handle: cint): cint {.exportc, cdecl, dynlib, raises: [].} =
   ## Finish the file and release the handle. The handle is invalid afterwards
   ## whether or not this succeeded, so a failure is reported rather than left
   ## to be retried.
@@ -573,7 +575,7 @@ proc umov_writer_close(handle: cint): cint {.exportc, cdecl, dynlib.} =
   except MovieError as error:
     lastError = error.msg
     result = cint(umovErrFormat)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrArg)
   finally:
@@ -582,7 +584,7 @@ proc umov_writer_close(handle: cint): cint {.exportc, cdecl, dynlib.} =
 
 
 proc umov_writer_counts(handle, track: cint; pending, flushed: ptr cint): cint
-    {.exportc, cdecl, dynlib.} =
+    {.exportc, cdecl, dynlib, raises: [].} =
   ## How many samples of `track` are buffered for the next fragment or cluster,
   ## and how many boundaries have been written so far.
   ##
@@ -620,14 +622,14 @@ proc umov_writer_counts(handle, track: cint; pending, flushed: ptr cint): cint
       flushed[] = cint(writers[index].matroska.clusterCount)
     lastError = ""
     result = cint(umovOk)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrArg)
 
 
 
 proc umov_location(path: cstring; latitude, longitude: ptr cdouble;
-                   found: ptr cint): cint {.exportc, cdecl, dynlib.} =
+                   found: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
   ## Where a recording says it was made.
   ##
   ## `found` is 0 when the file carries no position, which most do not and
@@ -649,8 +651,61 @@ proc umov_location(path: cstring; latitude, longitude: ptr cdouble;
   except IOError, OSError:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrIo)
-  except CatchableError, Defect:
+  except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
 
+proc umov_creation_date(path: cstring; unixSeconds: ptr clonglong;
+                        found: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
+  ## When a recording says it was made, as seconds since 1970.
+  ##
+  ## `found` is 0 where the file leaves the field unset, which a muxer with no
+  ## date to write does. That is a real state, not a failure, and zero seconds is
+  ## a real moment — so a caller reads `found` rather than testing the number.
+  if path == nil or unixSeconds == nil or found == nil:
+    lastError = "every argument must be non-null"
+    return cint(umovErrArg)
+  try:
+    let stamp = movieEdit.movieCreationDate($path)
+    found[] = cint(if stamp.found: 1 else: 0)
+    unixSeconds[] = clonglong(
+      if stamp.found: stamp.moment.toTime().toUnix() else: 0)
+    lastError = ""
+    result = cint(umovOk)
+  except IOError, OSError:
+    lastError = getCurrentExceptionMsg()
+    result = cint(umovErrIo)
+  except Exception:
+    lastError = getCurrentExceptionMsg()
+    result = cint(umovErrFormat)
+
+proc umov_set_creation_date(inPath, outPath: cstring; unixSeconds: clonglong;
+                            changed: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
+  ## Correct the date a wrong camera clock wrote, and report how many boxes were
+  ## changed.
+  ##
+  ## `outPath` may equal `inPath`. The samples are not touched and no box changes
+  ## size, so the file stays the length it was.
+  ##
+  ## Refused with `UMOV_ERR_FORMAT` for a file that states the date a second time
+  ## in a variable-length atom: correcting only the fixed-width headers would
+  ## leave the two disagreeing, and the text one is what Apple software reads.
+  if inPath == nil or outPath == nil or changed == nil:
+    lastError = "every argument must be non-null"
+    return cint(umovErrArg)
+  changed[] = 0
+  try:
+    let moment = fromUnix(int64(unixSeconds)).utc()
+    changed[] = cint(movieEdit.setMovieCreationDate($inPath, $outPath, moment))
+    lastError = ""
+    result = cint(umovOk)
+  except movieEdit.MovieDateError as error:
+    lastError = error.msg
+    result = cint(umovErrFormat)
+  except IOError, OSError:
+    lastError = getCurrentExceptionMsg()
+    result = cint(umovErrIo)
+  except Exception:
+    lastError = getCurrentExceptionMsg()
+    result = cint(umovErrFormat)

@@ -45,8 +45,11 @@ const char *umov_version(void);
 const char *umov_last_error(void);
 
 /* Shape of a container: track count, the index of the first video and audio
- * track (-1 when absent), the playing time in seconds, and the container's own
- * name -- "mp4", "mov", "matroska", "webm", "avi". format takes at most fifteen
+ * track (-1 when absent), the playing time in seconds, and what the container
+ * calls itself: an ISO base media file reports its major brand -- "isom",
+ * "mov" -- while the others report a family name, "matroska", "webm", "avi".
+ * umov_sniff is the one that answers with a family name throughout.
+ * format takes at most fifteen
  * characters and a terminating zero, so pass sixteen bytes, or NULL when the
  * name is not wanted. */
 int umov_probe(const char *path, int *track_count, int *video_index,
@@ -109,6 +112,23 @@ int umov_edit_list(const char *path, int track, long long *durations,
  * testing the numbers. */
 int umov_location(const char *path, double *latitude, double *longitude,
                   int *found);
+
+/* When a recording says it was made, as seconds since 1970. found is 0 where
+ * the file leaves the field unset, which a muxer with no date to write does;
+ * that is a real state, not a failure, and zero seconds is a real moment, so
+ * read found rather than testing the number. */
+int umov_creation_date(const char *path, long long *unix_seconds, int *found);
+
+/* Correct the date a wrong camera clock wrote, reporting in changed how many
+ * boxes were rewritten. out_path may equal in_path. The samples are not touched
+ * and no box changes size, so the file stays the length it was.
+ *
+ * UMOV_ERR_FORMAT for a file that states the date a second time in a
+ * variable-length atom (QuickTime's copyright-day tag, or Apple's creationdate
+ * key): correcting only the fixed-width headers would leave the two
+ * disagreeing, and the text one is what Apple software reads. */
+int umov_set_creation_date(const char *in_path, const char *out_path,
+                           long long unix_seconds, int *changed);
 
 /* ---- Writing ---------------------------------------------------------- */
 
