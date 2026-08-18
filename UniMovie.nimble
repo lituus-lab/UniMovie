@@ -147,7 +147,7 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   rmDir "coverage"
   rmFile "lcov.info"
   var traces: seq[string]
-  for suite in ["isobmff", "probe", "mux"]:
+  for suite in ["isobmff", "probe", "mux", "samples", "fragment", "mkvmux"]:
     let cache = "build/covcache_" & suite
     rmDir cache
     exec "nim c --path:src --nimcache:" & cache &
@@ -164,8 +164,20 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   exec "genhtml lcov.info --output-directory coverage --legend --quiet"
   exec "lcov --summary lcov.info"
 
+# Anything after `--` reaches the benchmark, not nimble: a task whose `exec` is
+# a fixed string drops it silently, which makes a documented recipe write
+# nothing at all.
+proc forwardedArgs(): string =
+  var seen = false
+  for index in 0 .. paramCount():
+    let argument = paramStr(index)
+    # Quoted here rather than by `quoteShell`, which NimScript does not have.
+    if seen: result &= " \"" & argument & "\""
+    elif argument == "bench": seen = true
+
 task bench, "Probe timings against ffprobe (release; not in the default gate)":
-  exec "nim c -r -d:release --path:src --hints:off -o:build/bench bench/bench_probe.nim"
+  exec "nim c -r -d:release --path:src --hints:off -o:build/bench" &
+       " bench/bench_probe.nim" & forwardedArgs()
 
 task benchReadme, "Run the benchmarks and splice their output into bench/README.md":
   exec "nim c -r --path:src --hints:off -o:build/bench_readme bench/export_readme.nim"

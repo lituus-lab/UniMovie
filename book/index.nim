@@ -135,4 +135,74 @@ parameter set. Reading a parameter set produces no pixel — it is the same thin
 `ffprobe` does to answer the same question.
 """
 
+nbText: """
+## Writing one back
+
+The other half assembles a container around samples somebody else encoded, and
+never produces one. A remux therefore reads the samples out and writes them
+straight back in, and the pictures that come out are the pictures that went in.
+
+Two numbers have to travel with each sample. Its duration, and how far its
+display time sits from its decode time — the composition offset, which is
+non-zero only where the encoder reordered. Dropping the second is the classic
+way to produce a file that is perfectly well formed and plays out of order.
+"""
+
+nbCode:
+  let clip = currentSourcePath.parentDir.parentDir / "tests" / "fixtures" /
+             "tiny.mp4"
+  let bytes = readFile(clip)
+  let shape = readMovie(bytes)
+  let index = shape.videoTrack
+  let timing = sampleTiming(bytes, index)
+  let destination = getTempDir() /
+    ("unimovie-book-" & $getCurrentProcessId() & ".mkv")
+
+  var writer = newMatroskaWriter(destination, [TrackParams(
+    kind: tkVideo, codec: shape.tracks[index].codec,
+    timescale: shape.tracks[index].timescale,
+    width: shape.tracks[index].width, height: shape.tracks[index].height,
+    edits: editList(bytes, index))])
+  for sample in 0 ..< shape.tracks[index].sampleCount:
+    var payload: seq[byte]
+    for character in codedSample(bytes, index, sample):
+      payload.add byte(character)
+    writer.writeSample(0, payload, timing[sample].duration,
+                       sample in shape.tracks[index].keyframes,
+                       timing[sample].compositionOffset)
+  writer.close()
+
+  let written = readFile(destination)
+  # The count is compared before the samples are: a writer that dropped one
+  # would otherwise pass, since a shorter loop still matches every sample it
+  # runs over.
+  var identical = codedSampleCount(written, 0) ==
+    shape.tracks[index].sampleCount
+  if identical:
+    for sample in 0 ..< codedSampleCount(written, 0):
+      if codedSample(written, 0, sample) != codedSample(bytes, index, sample):
+        identical = false
+  echo "wrote ", readMovie(written).format, ", ",
+    codedSampleCount(written, 0), " samples, identical to the source: ",
+    identical
+  removeFile(destination)
+
+nbText: """
+`newMp4Writer` and `newFragmentedMp4Writer` take the same tracks and the same
+samples. The fragmented one puts `moov` first with empty tables and writes a
+`moof`/`mdat` pair per fragment, so it never seeks backwards and a player can
+start on the first pair — which is what a live stream needs and what a
+whole-file writer cannot give it.
+
+Where a fragment or a cluster breaks is the caller's decision, not this
+library's: one that does not start on a keyframe cannot be played on its own,
+and that is most of the reason to write one.
+
+An edit list is the third thing that has to travel. It says a track plays
+something other than its media from the start — cancelling the offset a
+reordered stream begins with, or trimming the priming samples an audio encoder
+emits. Matroska has no such box, so what the list says is applied to the
+timestamps instead.
+"""
+
 nbSave
