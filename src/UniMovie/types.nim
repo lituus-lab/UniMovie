@@ -77,6 +77,28 @@ type
       ## reader does not go: Matroska's Cues, AVI's per-chunk flags, a transport
       ## stream's random-access indicator.
 
+  Edit* = object
+    ## One entry of a track's edit list: which stretch of its media plays, and
+    ## for how long on the presentation clock.
+    ##
+    ## Two shapes cover almost every real use. An **empty edit** — `mediaTime`
+    ## of -1 — holds the track blank for `duration`, which is how a track that
+    ## starts late stays in sync with one that does not. A **trim** —
+    ## `mediaTime` of *n* — starts playback *n* units into the media, which is
+    ## how an encoder's own priming samples are kept out of what is heard.
+    ##
+    ## The media rate is always 1. A rate other than 1 asks a player to
+    ## resample, which is a decision about the content rather than about the
+    ## container, and leaving it out means no caller writes 0 by forgetting to
+    ## set it.
+    duration*: int64
+      ## How long this edit lasts, in the **movie** timescale — milliseconds.
+      ## Zero means the rest of the track: the whole media duration for a trim,
+      ## which a caller cannot compute before the last sample is written.
+    mediaTime*: int64
+      ## Where in the media this edit starts, in the **track's** timescale, or
+      ## -1 for an empty edit that plays nothing.
+
   Movie* = object
     ## Everything a probe reports about a file.
     format*: string  ## container brand, e.g. "mp4", "mov", "matroska"

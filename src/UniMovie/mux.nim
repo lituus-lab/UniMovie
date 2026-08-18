@@ -33,28 +33,6 @@ const
     ## a caller asking for more is refused rather than allocated for.
 
 type
-  Edit* = object
-    ## One entry of a track's edit list: which stretch of its media plays, and
-    ## for how long on the presentation clock.
-    ##
-    ## Two shapes cover almost every real use. An **empty edit** — `mediaTime`
-    ## of -1 — holds the track blank for `duration`, which is how a track that
-    ## starts late stays in sync with one that does not. A **trim** —
-    ## `mediaTime` of *n* — starts playback *n* units into the media, which is
-    ## how an encoder's own priming samples are kept out of what is heard.
-    ##
-    ## The media rate is always 1. A rate other than 1 asks a player to
-    ## resample, which is a decision about the content rather than about the
-    ## container, and leaving it out means no caller writes 0 by forgetting to
-    ## set it.
-    duration*: int64
-      ## How long this edit lasts, in the **movie** timescale — milliseconds.
-      ## Zero means the rest of the track: the whole media duration for a trim,
-      ## which a caller cannot compute before the last sample is written.
-    mediaTime*: int64
-      ## Where in the media this edit starts, in the **track's** timescale, or
-      ## -1 for an empty edit that plays nothing.
-
   TrackParams* = object
     ## What a track is, before any sample of it exists.
     kind*: TrackKind
@@ -490,5 +468,287 @@ proc sampleCount*(writer: Mp4Writer; track: int): int {.contractual.} =
     track < writer.params.len
   body:
     writer.samples[track].len
+
+
+# Fragmented MP4: the same boxes, written in an order that does not need the
+# end of the file to be known at the start.
+#
+# The whole-file writer above puts `moov` last, because a sample table cannot
+# be sized until the last sample is in. That is fine for a file, and impossible
+# for a live stream: nothing can be played until the recording stops. A
+# fragmented file instead writes `moov` first with empty tables and a `mvex`
+# that says fragments follow, then a `moof`/`mdat` pair per fragment, each
+# carrying its own small table. A player can start on the first pair.
+
+type
+  FragmentedMp4Writer* = object
+    ## An open sink, and the samples of the fragment being built.
+    ##
+    ## Only the current fragment is held, not the whole file — which is the
+    ## point of the format, and why a recording of any length costs the same
+    ## memory here.
+    stream: Stream
+    params: seq[TrackParams]
+    pending: seq[seq[Sample]]
+    payload: seq[string] ## the coded bytes of the current fragment, per track
+    baseTime: seq[int64] ## decode time each track's next fragment starts at
+    sequence: int
+    closed: bool
+    ownsStream: bool
+
+func fragmentedFtyp(): string =
+  ## `iso5` as the major brand: it is the one that says a reader must
+  ## understand movie fragments, so a player that does not will refuse the file
+  ## rather than show its empty tables as an empty movie.
+  box("ftyp", "iso5\0\0\2\0iso5iso6mp42")
+
+func trexBox(trackId: int): string =
+  ## `trex`: the per-track defaults a fragment falls back on. All zero here,
+  ## because every `trun` this writes states each sample's duration, size and
+  ## flags outright — a default that disagreed with a fragment would be a
+  ## silent wrong answer, and there is nothing to gain by saving the bytes.
+  var payload: string
+  payload.putBE(int64(trackId), 4)
+  payload.putBE(1, 4) # sample description index
+  payload.putBE(0, 4) # default duration
+  payload.putBE(0, 4) # default size
+  payload.putBE(0, 4) # default flags
+  fullBox("trex", payload)
+
+func sampleFlags(keyframe: bool): int64 =
+  ## The per-sample flags a `trun` carries. A keyframe declares that nothing
+  ## depends on it being preceded; anything else declares that it does depend
+  ## and is not a sync sample, which is what a player seeking needs to know —
+  ## a fragmented file has no `stss` to say it instead.
+  if keyframe: 0x0200_0000 else: 0x0101_0000
+
+proc newFragmentedMp4Writer*(stream: Stream; tracks: openArray[TrackParams]):
+    FragmentedMp4Writer {.contractual.} =
+  ## Write the header and an empty `moov` into `stream`, ready for fragments.
+  ##
+  ## The stream is never seeked back into, so this suits a pipe or a socket as
+  ## well as a file — which the whole-file writer does not, since it patches
+  ## `mdat`'s length at the end.
+  ##
+  ## A track's edit list is written if it has one, but do not count on a reader
+  ## honouring it: ffmpeg says outright that it does not apply edit lists to a
+  ## fragmented file, so a trim that a whole-file version would perform is
+  ## simply played. Where the trimming matters, leave the samples out instead
+  ## of asking for an edit that trims them.
+  require:
+    tracks.len in 1 .. MaxWriterTracks
+  body:
+    for track in tracks:
+      if track.kind == tkOther:
+        raise newException(MovieError, "mp4: a track must be video or audio")
+      if track.codec.len != 4:
+        raise newException(MovieError,
+          "mp4: a codec is four characters, not '" & track.codec & "'")
+      if track.timescale notin 1 .. 1_000_000_000:
+        raise newException(MovieError, "mp4: implausible timescale")
+      if track.kind == tkVideo and
+          (track.width notin 1 .. MaxDimension or
+           track.height notin 1 .. MaxDimension):
+        raise newException(MovieError, "mp4: a video track needs its size")
+    if stream == nil:
+      raise newException(IOError, "mp4: no stream to write to")
+
+    result.stream = stream
+    result.params = @tracks
+    result.pending = newSeq[seq[Sample]](tracks.len)
+    result.payload = newSeq[string](tracks.len)
+    result.baseTime = newSeq[int64](tracks.len)
+
+    const identity = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+    var mvhd: string
+    mvhd.putBE(0, 8) # creation and modification time, unset
+    mvhd.putBE(MovieTimescale, 4)
+    # A duration of zero: the file does not know its own length yet, and
+    # writing a guess would be worse than saying nothing.
+    mvhd.putBE(0, 4)
+    mvhd.putBE(0x00010000, 4) # rate 1.0
+    mvhd.putBE(0x0100, 2) # volume 1.0
+    mvhd.putBE(0, 10) # reserved
+    for value in identity: mvhd.putBE(int64(value), 4)
+    mvhd.putBE(0, 24) # pre-defined
+    mvhd.putBE(int64(tracks.len + 1), 4) # next track id
+
+    var moov = fullBox("mvhd", mvhd)
+    for index, params in tracks:
+      # An empty sample table: every table below states a count of zero, which
+      # is what says the samples arrive in fragments rather than that there
+      # are none.
+      moov.add trackBox(params, @[], @[], index + 1)
+    var mvex: string
+    for index in 0 ..< tracks.len: mvex.add trexBox(index + 1)
+    moov.add box("mvex", mvex)
+
+    result.stream.write(fragmentedFtyp())
+    result.stream.write(box("moov", moov))
+
+proc newFragmentedMp4Writer*(path: string; tracks: openArray[TrackParams]):
+    FragmentedMp4Writer {.contractual.} =
+  ## `newFragmentedMp4Writer` over a file.
+  require:
+    path.len > 0
+    tracks.len in 1 .. MaxWriterTracks
+  body:
+    let stream = openFileStream(path, fmWrite)
+    if stream == nil:
+      raise newException(IOError, "mp4: cannot write " & path)
+    result = newFragmentedMp4Writer(stream, tracks)
+    result.ownsStream = true
+
+proc writeSample*(writer: var FragmentedMp4Writer; track: int;
+                  data: openArray[byte]; duration: int; keyframe = true;
+                  compositionOffset = 0) {.contractual.} =
+  ## Append one coded sample to the fragment being built.
+  ##
+  ## Nothing reaches the stream until `flushFragment`, so a caller decides
+  ## where fragments break. That is a real decision rather than a detail: a
+  ## fragment that does not start on a keyframe cannot be played on its own,
+  ## which is most of the reason to write one.
+  require:
+    track >= 0
+    duration >= 0
+  body:
+    if writer.closed: raise newException(MovieError, "mp4: writer is closed")
+    if track >= writer.params.len:
+      raise newException(MovieError, "mp4: track index past the file")
+    if writer.pending[track].len >= MaxWriterSamples:
+      raise newException(MovieError, "mp4: too many samples in one fragment")
+    if data.len == 0:
+      raise newException(MovieError, "mp4: an empty sample has no meaning")
+    writer.pending[track].add Sample(size: data.len, offset: 0,
+      duration: duration, keyframe: keyframe,
+      compositionOffset: compositionOffset)
+    let at = writer.payload[track].len
+    writer.payload[track].setLen(at + data.len)
+    copyMem(addr writer.payload[track][at], unsafeAddr data[0], data.len)
+
+func trunBox(samples: seq[Sample]; dataOffset: int): string =
+  ## `trun`: one fragment's samples for one track, each with its own duration,
+  ## size and flags, and its composition offset where any sample has one.
+  ##
+  ## `dataOffset` is counted from the start of the enclosing `moof`, which is
+  ## what `tfhd`'s default-base-is-moof flag asks for. Counting from the file
+  ## instead would make a fragment unable to move, and a fragment that cannot
+  ## be copied out of its file is of little use.
+  var reordered = false
+  for sample in samples:
+    if sample.compositionOffset != 0: reordered = true; break
+  var flags = 0x0001 or 0x0100 or 0x0200 or 0x0400
+  if reordered: flags = flags or 0x0800
+  var payload: string
+  payload.putBE(int64(samples.len), 4)
+  payload.putBE(int64(dataOffset), 4)
+  for sample in samples:
+    payload.putBE(int64(sample.duration), 4)
+    payload.putBE(int64(sample.size), 4)
+    payload.putBE(sampleFlags(sample.keyframe), 4)
+    if reordered: payload.putBE(int64(sample.compositionOffset), 4)
+  # A full box's header is a version byte and three flag bytes, and `trun`'s
+  # flags run past one byte, so they are written as three rather than through
+  # `fullBox`, which only writes zeros.
+  var header = "\0"
+  header.putBE(int64(flags), 3)
+  box("trun", header & payload)
+
+func moofBox(pending: seq[seq[Sample]]; baseTime: seq[int64];
+             sequence: int; offsets: seq[int]): string =
+  ## One fragment's `moof`: which fragment this is, and per track where its
+  ## media sits and what each sample of it is.
+  ##
+  ## A top-level function rather than a closure inside `flushFragment`, because
+  ## a `var` writer cannot be captured — and passing the three pieces it needs
+  ## makes it plain that nothing else is read.
+  var mfhd: string
+  mfhd.putBE(int64(sequence), 4)
+  var body = fullBox("mfhd", mfhd)
+  for index, samples in pending:
+    if samples.len == 0: continue
+    var tfhd: string
+    tfhd.putBE(int64(index + 1), 4)
+    # default-base-is-moof: a `trun` offset counts from this `moof` rather than
+    # from the file, so the fragment survives being copied out of it.
+    var traf = box("tfhd", "\0\x02\0\0" & tfhd)
+    var tfdt: string
+    tfdt.putBE(baseTime[index], 8)
+    traf.add box("tfdt", "\x01\0\0\0" & tfdt) # version 1: a 64-bit time
+    traf.add trunBox(samples, offsets[index])
+    body.add box("traf", traf)
+  box("moof", body)
+
+proc flushFragment*(writer: var FragmentedMp4Writer) {.contractual.} =
+  ## Write the fragment being built, as one `moof` and one `mdat`.
+  ##
+  ## A fragment holding no sample writes nothing at all rather than an empty
+  ## pair, so a caller may flush on a timer without checking first.
+  require:
+    not writer.closed
+  body:
+    var any = false
+    for track in writer.pending:
+      if track.len > 0: any = true; break
+    if not any: return
+
+    inc writer.sequence
+
+    # The box is built twice: once to learn how long it is, then again with
+    # each track's real offset into `mdat`. The offsets are fixed-width, so
+    # the second build is the same size as the first.
+    let zeros = newSeq[int](writer.params.len)
+    let moofLength = moofBox(writer.pending, writer.baseTime,
+                             writer.sequence, zeros).len
+    var offsets = newSeq[int](writer.params.len)
+    var running = moofLength + 8 # past the mdat header
+    for index, samples in writer.pending:
+      if samples.len == 0: continue
+      offsets[index] = running
+      running += writer.payload[index].len
+    let moof = moofBox(writer.pending, writer.baseTime, writer.sequence,
+                       offsets)
+
+    var media: string
+    for index, samples in writer.pending:
+      if samples.len == 0: continue
+      media.add writer.payload[index]
+    writer.stream.write(moof)
+    writer.stream.write(box("mdat", media))
+
+    for index, samples in writer.pending:
+      for sample in samples: writer.baseTime[index] += int64(sample.duration)
+      writer.pending[index].setLen(0)
+      writer.payload[index].setLen(0)
+
+proc close*(writer: var FragmentedMp4Writer) {.contractual.} =
+  ## Flush whatever is still buffered and finish the file.
+  ##
+  ## No `mfra` index is written: it would have to be seeked back to and this
+  ## writer never seeks, which is what lets it write to a pipe. A player finds
+  ## fragments by walking them, which is how a live stream is read anyway.
+  require:
+    not writer.closed
+  body:
+    writer.flushFragment()
+    writer.closed = true
+    if writer.ownsStream: writer.stream.close()
+
+func trackCount*(writer: FragmentedMp4Writer): int =
+  ## How many tracks the writer was opened for.
+  writer.params.len
+
+func fragmentCount*(writer: FragmentedMp4Writer): int =
+  ## How many fragments have been written so far.
+  writer.sequence
+
+func pendingSamples*(writer: FragmentedMp4Writer; track: int): int
+    {.contractual.} =
+  ## How many samples are buffered for `track`, waiting for the next flush.
+  require:
+    track >= 0
+    track < writer.params.len
+  body:
+    writer.pending[track].len
 
 

@@ -454,3 +454,54 @@ proc readMovieFile*(path: string): Movie {.contractual.} =
 
 
 
+proc editList*(data: string; trackIndex: int): seq[Edit] {.contractual.} =
+  ## A track's edit list, or empty when it has none.
+  ##
+  ## Needed to remux a file faithfully. A track whose edit list is dropped
+  ## plays at a different time from the one it was written to play at: the
+  ## constant composition offset a reordered video stream begins with stops
+  ## being cancelled, and an audio track's encoder priming stops being trimmed
+  ## and becomes audible. Neither shows up as a malformed file — only as sound
+  ## and picture that no longer line up.
+  ##
+  ## Durations come back in the movie timescale and media times in the track's,
+  ## which is how the boxes store them.
+  require:
+    trackIndex >= 0
+  body:
+    let reader = Reader(data: data)
+    let moov = findBox(reader.bytes, 0, data.len, ["moov"])
+    if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
+    var seen = 0
+    for kind, body, bodyEnd in boxes(reader.bytes, moov.body, moov.bodyEnd):
+      if kind != "trak": continue
+      if seen != trackIndex:
+        inc seen
+        continue
+      let elst = findBox(reader.bytes, body, bodyEnd, ["edts", "elst"])
+      if elst.body < 0: return @[]
+      if elst.body + 8 > elst.bodyEnd: return @[]
+      let version = int(uint8(data[elst.body]))
+      # Version 1 widens the duration and the media time to 64 bits, which a
+      # recording longer than a day needs and nothing shorter does.
+      let width = if version == 1: 8 else: 4
+      let count = int(reader.beU32(elst.body + 4))
+      var at = elst.body + 8
+      for _ in 0 ..< count:
+        if at + 2 * width + 4 > elst.bodyEnd: break
+        var edit: Edit
+        if version == 1:
+          edit.duration = int64(reader.beU64(at))
+          edit.mediaTime = int64(reader.beU64(at + 8))
+        else:
+          edit.duration = reader.beU32(at)
+          # A media time of -1 is the empty edit, and it is stored as all ones
+          # rather than as a small negative number.
+          let raw = reader.beU32(at + 4)
+          edit.mediaTime = if raw == 0xFFFF_FFFF'i64: -1 else: raw
+        result.add edit
+        at += 2 * width + 4 # the media rate, which is not reported
+      return
+    raise newException(MovieError, "mp4: track index past the file")
+
+
