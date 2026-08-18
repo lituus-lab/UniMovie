@@ -26,11 +26,21 @@ may be decoded here without that reservation.
 | MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
 | Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements. Clusters are not walked, so there is no per-sample access and no keyframe index — Cues would give one. |
 | AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags in `movi`. |
+| MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
+| Ogg (OGV) | Streams and codecs from each one's first packet, with the picture size and frame rate the identification header carries. Duration is the frame count over that rate. VP8 is covered by a fixture; the Theora path is written from the specification, because no encoder here produces one. |
 
 Codec identifiers are reported as the four-character codes MP4 uses, whichever
 container they came from: a Matroska `V_MPEG4/ISO/AVC` reads as `avc1`, so a
 caller registers one backend per codec rather than one per container. An
 identifier with no MP4 equivalent passes through unchanged.
+
+## One place it looks inside a stream
+
+A transport stream carries no dimensions — they live in the coded stream — so a
+picture size for H.264 comes from the sequence parameter set. Reading a
+parameter set produces no pixel and is not decoding; `ffprobe` reaches those
+numbers the same way. It is the only place this library looks past a container,
+and it does so for that one codec.
 
 ## Rotation counts clockwise
 

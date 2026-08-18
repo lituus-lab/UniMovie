@@ -17,10 +17,15 @@ proc ffprobeField(path, entries: string): string =
   let (output, code) = execCmdEx("ffprobe -v error -select_streams v:0 " &
     "-show_entries " & entries & " -of default=nw=1:nk=1 " & path.quoteShell)
   if code != 0: return ""
-  output.strip()
+  # A transport stream makes ffprobe print the entry more than once, so take
+  # the first non-empty line rather than the whole output.
+  for line in output.splitLines():
+    let value = line.strip()
+    if value.len > 0: return value
+  ""
 
 const Every = ["tiny.mp4", "av.mp4", "rotated.mov", "tiny.mkv", "tiny.webm",
-               "tiny.avi"]
+               "tiny.avi", "tiny.ts", "tiny.ogv"]
 
 suite "one entry point over every container":
   test "each fixture is recognised from its bytes":
@@ -29,7 +34,9 @@ suite "one entry point over every container":
     check sniffFile(Fixtures / "tiny.mkv") == cMatroska
     check sniffFile(Fixtures / "tiny.webm") == cMatroska
     check sniffFile(Fixtures / "tiny.avi") == cAvi
-    for container in [cIsoBmff, cMatroska, cAvi]:
+    check sniffFile(Fixtures / "tiny.ts") == cMpegTs
+    check sniffFile(Fixtures / "tiny.ogv") == cOgg
+    for container in [cIsoBmff, cMatroska, cAvi, cMpegTs, cOgg]:
       check reads(container)
     check not reads(cUnknown)
 
@@ -112,3 +119,54 @@ suite "malformed input is reported, not fatal":
         except MovieError, IOError, ValueError:
           discard
         step += 101
+
+suite "mpeg transport stream":
+  test "streams are found through the program tables":
+    let movie = readMovieFile(Fixtures / "tiny.ts")
+    check movie.format == "mpegts"
+    check movie.tracks.len == 1
+    check movie.tracks[0].kind == tkVideo
+    check movie.tracks[0].codec == "avc1"
+    # The PID, not a position: a transport stream identifies a stream by it.
+    check movie.tracks[0].id > 0
+
+  test "the picture size comes from the sequence parameter set":
+    # A transport stream does not carry dimensions; they are in the coded
+    # stream. Reading a parameter set produces no pixel, and ffprobe reaches
+    # them the same way — so its answer is the check.
+    let movie = readMovieFile(Fixtures / "tiny.ts")
+    let width = ffprobeField(Fixtures / "tiny.ts", "stream=width")
+    if width.len > 0:
+      check $movie.tracks[0].width == width
+      check $movie.tracks[0].height ==
+        ffprobeField(Fixtures / "tiny.ts", "stream=height")
+
+  test "the duration spans the timestamps plus one interval":
+    # Ten frames at ten a second are 0.9 seconds apart and one second long.
+    let movie = readMovieFile(Fixtures / "tiny.ts")
+    check abs(movie.durationSeconds - 1.0) < 0.05
+
+  test "bytes with no packet rhythm are not mistaken for a stream":
+    check not isMpegTs("G" & repeat("x", 1000))
+    expect MovieError:
+      discard readMpegTs("G" & repeat("x", 1000))
+
+suite "ogg":
+  test "a logical stream is identified by its first packet":
+    let movie = readMovieFile(Fixtures / "tiny.ogv")
+    check movie.format == "ogg"
+    check movie.tracks.len == 1
+    check movie.tracks[0].kind == tkVideo
+    check movie.tracks[0].codec == "vp08"
+    check (movie.tracks[0].width, movie.tracks[0].height) == (48, 32)
+
+  test "the frame count is the packets less this codec's headers":
+    # VP8 in Ogg has two header packets; Theora has three. Counting them as
+    # frames would make every file longer than it is.
+    let movie = readMovieFile(Fixtures / "tiny.ogv")
+    check movie.tracks[0].sampleCount == 5
+    check abs(movie.durationSeconds - 1.0) < 0.05
+
+  test "bytes with no page at the start are refused":
+    expect MovieError:
+      discard readOgg("OggT not a page")

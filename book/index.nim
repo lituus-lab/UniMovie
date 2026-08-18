@@ -86,10 +86,9 @@ nbCode:
   echo "stored ", track.width, "x", track.height,
     ", display rotation ", ord(track.rotation), " degrees clockwise"
 
-nbSave
 
 nbText: """
-## Three containers, one call
+## Five containers, one call
 
 `readMovieFile` identifies the container from its bytes and dispatches. The
 extension is never consulted — a `.avi` holding a Matroska stream is a real
@@ -98,7 +97,8 @@ thing, and a caller should not have to guess.
 
 nbCode:
   let fixtures = currentSourcePath.parentDir.parentDir / "tests" / "fixtures"
-  for name in ["tiny.mp4", "tiny.mkv", "tiny.webm", "tiny.avi"]:
+  for name in ["tiny.mp4", "tiny.mkv", "tiny.webm", "tiny.avi", "tiny.ts",
+               "tiny.ogv"]:
     let each = readMovieFile(fixtures / name)
     let shown = each.tracks[each.videoTrack]
     echo name, ": ", each.format, ", ", shown.codec, " ",
@@ -109,4 +109,11 @@ The codec is reported as the four-character code MP4 uses, whichever container
 it came from: Matroska writes `V_MPEG4/ISO/AVC` where MP4 writes `avc1`, and
 both read here as `avc1`. A caller registers one backend per codec rather than
 one per container, which is the point.
+
+A transport stream is the exception to "the container says everything": it
+carries no dimensions at all, so an H.264 picture size comes from the sequence
+parameter set. Reading a parameter set produces no pixel — it is the same thing
+`ffprobe` does to answer the same question.
 """
+
+nbSave
