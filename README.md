@@ -81,9 +81,11 @@ UniMovie is a leaf of `lituus-lab`'s `Uni*` family: a set of Nim libraries,
 each with a C ABI and a Python binding, unified by a shared dependency graph and
 documentation and testing conventions. See
 [lituus-lab/.github](https://github.com/lituus-lab/.github) for the family's
-purpose and philosophy. It depends on no other engine — demultiplexing is byte
-handling, and a consumer cataloguing a media library should not link a numeric
-stack to read a header.
+purpose and philosophy. It depends on `UniImage` alone, for the ISOBMFF box
+reader: HEIF and MP4 are the same box structure, and the family reads it in one
+place rather than two. Nothing else — demultiplexing is byte handling, and a
+consumer cataloguing a media library should not link a numeric stack to read a
+header.
 
 ## Provenance & development
 

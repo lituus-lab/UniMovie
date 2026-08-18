@@ -10,6 +10,8 @@ srcDir        = "src"
 
 requires "nim >= 2.0.0"
 requires "https://github.com/lbartoletti/NimContracts#main"
+# The ISOBMFF box layer, so the family has one box reader rather than two.
+requires "https://github.com/lituus-lab/UniImage#main"
 
 task lint, "Fail if nimpretty would reformat a source":
   exec "nim c -r --hints:off -o:build/lint_tool tools/lint.nim"

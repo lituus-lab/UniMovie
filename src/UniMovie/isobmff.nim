@@ -13,21 +13,26 @@
 ##
 ## Every offset, count and length comes from a table an arbitrary file controls,
 ## so each is checked against the file's real length before it is used.
+##
+## The box walk itself — `boxes` and `findBox` — comes from `UniImage`, which
+## reads the same structure for HEIF and for the Exif item inside an MP4. One
+## box reader in the family, not two.
 
 import contracts
 import std/strutils
+import UniImage
 import ./types
-
-const
-  MaxBoxDepth = 32
-    ## Deeper than any real file. A cycle, or a lie about a box's size, stops
-    ## here rather than recursing until the stack ends.
 
 type Reader = object
   ## The whole file in memory. `moov` may follow `mdat`, and the sample tables
   ## are scattered through the tree, so there is no forward-only reading of an
   ## MP4 — a demuxer needs random access or it needs the file.
   data: string
+
+template bytes(reader: Reader): untyped =
+  ## The file as the bytes `UniImage`'s box walk takes. A template rather than a
+  ## proc: `toOpenArrayByte` cannot be returned, only passed on.
+  reader.data.toOpenArrayByte(0, reader.data.high)
 
 func beU16(reader: Reader; offset: int): int =
   ## Two big-endian bytes. ISOBMFF is big-endian throughout.
@@ -57,44 +62,6 @@ func fourCC(reader: Reader; offset: int): string =
   ## trimmed: `avc1` and `AVC1` are different codes, and a trailing space is
   ## part of a brand like `mp4 `.
   reader.data[offset ..< offset + 4]
-
-iterator boxes(reader: Reader; start, limit: int): tuple[kind: string;
-    body, bodyEnd: int] =
-  ## Each box between `start` and `limit`, as its kind and the span of its
-  ## payload.
-  ##
-  ## A size of 0 means "to the end of the enclosing box"; 1 means a 64-bit size
-  ## follows the kind. A box that claims to be smaller than its own header, or
-  ## to run past its parent, ends the walk rather than raising: a trailing
-  ## garbage box after a valid `moov` should not cost a caller the tracks it
-  ## already parsed.
-  var offset = start
-  while offset + 8 <= limit:
-    var size = reader.beU32(offset)
-    let kind = reader.fourCC(offset + 4)
-    var header = 8
-    if size == 1:
-      if offset + 16 > limit: break
-      size = reader.beU64(offset + 8)
-      header = 16
-    elif size == 0:
-      size = int64(limit - offset)
-    if size < int64(header) or offset + int(size) > limit: break
-    yield (kind, offset + header, offset + int(size))
-    offset += int(size)
-
-proc findBox(reader: Reader; start, limit: int; path: openArray[string];
-             depth = 0): tuple[body, bodyEnd: int] =
-  ## Walk a path of box kinds, e.g. `["moov", "trak", "mdia"]`. Returns
-  ## `(-1, -1)` when any step is missing, so a caller tests one value rather
-  ## than catching an exception for a box that is legitimately optional.
-  if depth > MaxBoxDepth or path.len == 0: return (-1, -1)
-  for kind, body, bodyEnd in reader.boxes(start, limit):
-    if kind != path[0]: continue
-    if path.len == 1: return (body, bodyEnd)
-    let inner = reader.findBox(body, bodyEnd, path[1 .. ^1], depth + 1)
-    if inner.body >= 0: return inner
-  (-1, -1)
 
 func rotationOf(a, b, c, d: int32): Rotation =
   ## The display rotation a track's transformation matrix encodes.
@@ -178,7 +145,7 @@ proc parseStsd(reader: Reader; body, bodyEnd: int): string =
   ## where their parameter sets live, and flattening both to "h264" would lose
   ## what a backend needs to know.
   if body + 8 > bodyEnd: return ""
-  for kind, entryBody, entryEnd in reader.boxes(body + 8, bodyEnd):
+  for kind, entryBody, entryEnd in boxes(reader.bytes, body + 8, bodyEnd):
     return kind
   ""
 
@@ -201,23 +168,23 @@ proc parseStss(reader: Reader; body, bodyEnd: int; sampleCount: int): seq[int] =
 proc parseTrak(reader: Reader; body, bodyEnd: int): Track =
   ## One track: its header, its media header, what it carries, its codec and
   ## its sample count, plus the keyframe index when the file has one.
-  let tkhd = reader.findBox(body, bodyEnd, ["tkhd"])
+  let tkhd = findBox(reader.bytes, body, bodyEnd, ["tkhd"])
   if tkhd.body >= 0: reader.parseTkhd(tkhd.body, tkhd.bodyEnd, result)
-  let mdhd = reader.findBox(body, bodyEnd, ["mdia", "mdhd"])
+  let mdhd = findBox(reader.bytes, body, bodyEnd, ["mdia", "mdhd"])
   if mdhd.body >= 0: reader.parseMdhd(mdhd.body, mdhd.bodyEnd, result)
-  let hdlr = reader.findBox(body, bodyEnd, ["mdia", "hdlr"])
+  let hdlr = findBox(reader.bytes, body, bodyEnd, ["mdia", "hdlr"])
   if hdlr.body >= 0: result.kind = reader.parseHdlr(hdlr.body, hdlr.bodyEnd)
-  let stbl = reader.findBox(body, bodyEnd, ["mdia", "minf", "stbl"])
+  let stbl = findBox(reader.bytes, body, bodyEnd, ["mdia", "minf", "stbl"])
   if stbl.body < 0: return
-  let stsd = reader.findBox(stbl.body, stbl.bodyEnd, ["stsd"])
+  let stsd = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["stsd"])
   if stsd.body >= 0: result.codec = reader.parseStsd(stsd.body, stsd.bodyEnd)
-  let stsz = reader.findBox(stbl.body, stbl.bodyEnd, ["stsz"])
+  let stsz = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["stsz"])
   if stsz.body >= 0 and stsz.body + 12 <= stsz.bodyEnd:
     let count = int(reader.beU32(stsz.body + 8))
     if count < 0 or count > MaxSamples:
       raise newException(MovieError, "mp4: implausible sample count")
     result.sampleCount = count
-  let stss = reader.findBox(stbl.body, stbl.bodyEnd, ["stss"])
+  let stss = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["stss"])
   if stss.body >= 0:
     result.keyframes = reader.parseStss(stss.body, stss.bodyEnd,
         result.sampleCount)
@@ -240,7 +207,7 @@ proc sampleTable(reader: Reader; stbl, stblEnd: int; fileLen: int):
   var chunkOffsets: seq[int]
   var runs: seq[tuple[firstChunk, perChunk: int]]
 
-  for kind, body, bodyEnd in reader.boxes(stbl, stblEnd):
+  for kind, body, bodyEnd in boxes(reader.bytes, stbl, stblEnd):
     case kind
     of "stsz":
       if body + 12 > bodyEnd: continue
@@ -318,7 +285,7 @@ proc readMovie*(data: string): Movie {.contractual.} =
   body:
     if data.len < 8: raise newException(MovieError, "mp4: too short to be a file")
     let reader = Reader(data: data)
-    let ftyp = reader.findBox(0, data.len, ["ftyp"])
+    let ftyp = findBox(reader.bytes, 0, data.len, ["ftyp"])
     if ftyp.body < 0 or ftyp.body + 4 > ftyp.bodyEnd:
       raise newException(MovieError, "mp4: no ftyp box")
     # The major brand names the format. `qt  ` is QuickTime, which shares the
@@ -326,9 +293,9 @@ proc readMovie*(data: string): Movie {.contractual.} =
     let brand = reader.fourCC(ftyp.body)
     result.format = if brand == "qt  ": "mov" else: brand.strip(chars = {' '})
 
-    let moov = reader.findBox(0, data.len, ["moov"])
+    let moov = findBox(reader.bytes, 0, data.len, ["moov"])
     if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
-    let mvhd = reader.findBox(moov.body, moov.bodyEnd, ["mvhd"])
+    let mvhd = findBox(reader.bytes, moov.body, moov.bodyEnd, ["mvhd"])
     if mvhd.body >= 0 and mvhd.body + 4 <= mvhd.bodyEnd:
       let version = int(uint8(data[mvhd.body]))
       if version == 1 and mvhd.body + 4 + 16 + 4 + 8 <= mvhd.bodyEnd:
@@ -339,7 +306,7 @@ proc readMovie*(data: string): Movie {.contractual.} =
         result.duration = reader.beU32(mvhd.body + 4 + 12)
     if result.duration < 0: result.duration = 0
 
-    for kind, body, bodyEnd in reader.boxes(moov.body, moov.bodyEnd):
+    for kind, body, bodyEnd in boxes(reader.bytes, moov.body, moov.bodyEnd):
       if kind != "trak": continue
       if result.tracks.len >= MaxTracks:
         raise newException(MovieError, "mp4: implausible track count")
@@ -359,15 +326,15 @@ proc codedSample*(data: string; trackIndex, sampleIndex: int): string
     sampleIndex >= 0
   body:
     let reader = Reader(data: data)
-    let moov = reader.findBox(0, data.len, ["moov"])
+    let moov = findBox(reader.bytes, 0, data.len, ["moov"])
     if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
     var seen = 0
-    for kind, body, bodyEnd in reader.boxes(moov.body, moov.bodyEnd):
+    for kind, body, bodyEnd in boxes(reader.bytes, moov.body, moov.bodyEnd):
       if kind != "trak": continue
       if seen != trackIndex:
         inc seen
         continue
-      let stbl = reader.findBox(body, bodyEnd, ["mdia", "minf", "stbl"])
+      let stbl = findBox(reader.bytes, body, bodyEnd, ["mdia", "minf", "stbl"])
       if stbl.body < 0: raise newException(MovieError, "mp4: track has no stbl")
       let table = reader.sampleTable(stbl.body, stbl.bodyEnd, data.len)
       if sampleIndex >= table.sizes.len:
