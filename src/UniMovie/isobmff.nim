@@ -341,6 +341,145 @@ proc readMovie*(data: string): Movie {.contractual.} =
     if result.tracks.len == 0:
       raise newException(MovieError, "mp4: no track")
 
+# Movie fragments. A file written for streaming leaves `moov`'s sample tables
+# empty and puts one small table in each fragment instead, so the walk below is
+# what makes such a file readable at all — including one this library wrote.
+
+proc trackIds(reader: Reader; moov: tuple[body, bodyEnd: int]): seq[int] =
+  ## The `tkhd` identifier of each track, in the order `moov` lists them. A
+  ## fragment names its track by that identifier, and a caller counts positions.
+  for kind, body, bodyEnd in boxes(reader.bytes, moov.body, moov.bodyEnd):
+    if kind != "trak": continue
+    let tkhd = findBox(reader.bytes, body, bodyEnd, ["tkhd"])
+    var id = 0
+    if tkhd.body + 4 <= tkhd.bodyEnd:
+      let version = int(uint8(reader.data[tkhd.body]))
+      let idAt = tkhd.body + 4 + (if version == 1: 16 else: 8)
+      if idAt + 4 <= tkhd.bodyEnd: id = int(reader.beU32(idAt))
+    result.add id
+
+proc trexDefaults(reader: Reader; moov: tuple[body, bodyEnd: int];
+                  trackId: int): tuple[duration, size, flags: int] =
+  ## The defaults `mvex` declares for a track, which a fragment falls back on
+  ## for anything its own `tfhd`/`trun` leaves out.
+  let mvex = findBox(reader.bytes, moov.body, moov.bodyEnd, ["mvex"])
+  if mvex.body < 0: return
+  for kind, body, bodyEnd in boxes(reader.bytes, mvex.body, mvex.bodyEnd):
+    if kind != "trex" or body + 24 > bodyEnd: continue
+    if int(reader.beU32(body + 4)) != trackId: continue
+    result.duration = int(reader.beU32(body + 12))
+    result.size = int(reader.beU32(body + 16))
+    result.flags = int(reader.beU32(body + 20))
+    return
+
+proc fragmentSamples(data: string; trackId: int;
+                     defaults: tuple[duration, size, flags: int]):
+    seq[tuple[span: Slice[int]; duration, compositionOffset: int]] =
+  ## Every sample of one track across every fragment, in file order.
+  ##
+  ## A `trun`'s data offset is counted from the enclosing `moof` when `tfhd`
+  ## sets default-base-is-moof, and from the file otherwise — getting that
+  ## wrong reads the right number of samples from the wrong place, which looks
+  ## like a corrupt stream rather than a parsing bug.
+  let reader = Reader(data: data)
+  for kind, moofBody, moofEnd in boxes(reader.bytes, 0, data.len):
+    if kind != "moof": continue
+    let moofAt = moofBody - 8 # the box header, which offsets count from
+    for trafKind, trafBody, trafEnd in boxes(reader.bytes, moofBody, moofEnd):
+      if trafKind != "traf": continue
+      let tfhd = findBox(reader.bytes, trafBody, trafEnd, ["tfhd"])
+      if tfhd.body + 8 > tfhd.bodyEnd: continue
+      let tfhdFlags = int(reader.beU32(tfhd.body)) and 0xFF_FFFF
+      if int(reader.beU32(tfhd.body + 4)) != trackId: continue
+      var at = tfhd.body + 8
+      var base = int64(moofAt)
+      if (tfhdFlags and 0x01) != 0: # an explicit base offset
+        if at + 8 > tfhd.bodyEnd: continue
+        base = reader.beU64(at)
+        at += 8
+      if (tfhdFlags and 0x02) != 0: at += 4 # sample description index
+      var trackDuration = defaults.duration
+      var trackSize = defaults.size
+      var trackFlags = defaults.flags
+      if (tfhdFlags and 0x08) != 0:
+        if at + 4 > tfhd.bodyEnd: continue
+        trackDuration = int(reader.beU32(at))
+        at += 4
+      if (tfhdFlags and 0x10) != 0:
+        if at + 4 > tfhd.bodyEnd: continue
+        trackSize = int(reader.beU32(at))
+        at += 4
+      if (tfhdFlags and 0x20) != 0:
+        if at + 4 > tfhd.bodyEnd: continue
+        trackFlags = int(reader.beU32(at))
+        at += 4
+
+      # Where the next run starts when it does not say: immediately after the
+      # one before it, and at the base for the first. Restarting from the base
+      # each time would make two runs in one `traf` overlap, and each would
+      # still be the right length — so the samples would be plausible and
+      # wrong rather than obviously broken.
+      var runAt = base
+      for trunKind, trunBody, trunEnd in boxes(reader.bytes, trafBody, trafEnd):
+        if trunKind != "trun" or trunBody + 8 > trunEnd: continue
+        let version = int(uint8(data[trunBody]))
+        let flags = int(reader.beU32(trunBody)) and 0xFF_FFFF
+        let count = int(reader.beU32(trunBody + 4))
+        if count < 0 or count > MaxSamples:
+          raise newException(MovieError, "mp4: implausible fragment run")
+        var cursor = trunBody + 8
+        var offset = runAt
+        if (flags and 0x0001) != 0:
+          if cursor + 4 > trunEnd: continue
+          offset = base + int64(reader.beI32(cursor))
+          cursor += 4
+        if (flags and 0x0004) != 0: cursor += 4 # first sample's own flags
+        for _ in 0 ..< count:
+          var duration = trackDuration
+          var size = trackSize
+          var composition = 0
+          if (flags and 0x0100) != 0:
+            if cursor + 4 > trunEnd: break
+            duration = int(reader.beU32(cursor)); cursor += 4
+          if (flags and 0x0200) != 0:
+            if cursor + 4 > trunEnd: break
+            size = int(reader.beU32(cursor)); cursor += 4
+          if (flags and 0x0400) != 0: cursor += 4 # this sample's flags
+          if (flags and 0x0800) != 0:
+            if cursor + 4 > trunEnd: break
+            # Version 1 made the offset signed, so a stream may display a
+            # sample before the one it was decoded after.
+            composition = if version == 0: int(reader.beU32(cursor))
+                          else: int(reader.beI32(cursor))
+            cursor += 4
+          if size < 0 or offset < 0 or offset + int64(size) > int64(data.len):
+            raise newException(MovieError, "mp4: a fragment run leaves the file")
+          result.add (int(offset) ..< int(offset) + size, duration, composition)
+          offset += int64(size)
+        runAt = offset
+
+proc fragmented(data: string): bool =
+  ## Whether the file declares that its samples arrive in fragments. `mvex` is
+  ## what says so — an empty sample table alone would also describe a track
+  ## that really holds nothing.
+  let reader = Reader(data: data)
+  let moov = findBox(reader.bytes, 0, data.len, ["moov"])
+  if moov.body < 0: return false
+  findBox(reader.bytes, moov.body, moov.bodyEnd, ["mvex"]).body >= 0
+
+proc fragmentSamplesOf(data: string; trackIndex: int):
+    seq[tuple[span: Slice[int]; duration, compositionOffset: int]] =
+  ## The fragment walk for one track index, with the identifier looked up and
+  ## the defaults gathered.
+  let reader = Reader(data: data)
+  let moov = findBox(reader.bytes, 0, data.len, ["moov"])
+  if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
+  let ids = trackIds(reader, moov)
+  if trackIndex >= ids.len:
+    raise newException(MovieError, "mp4: track index past the file")
+  let id = ids[trackIndex]
+  fragmentSamples(data, id, trexDefaults(reader, moov, id))
+
 proc codedSample*(data: string; trackIndex, sampleIndex: int): string
     {.contractual.} =
   ## The coded bytes of one sample, exactly as the file holds them.
@@ -352,6 +491,11 @@ proc codedSample*(data: string; trackIndex, sampleIndex: int): string
     trackIndex >= 0
     sampleIndex >= 0
   body:
+    if fragmented(data):
+      let samples = fragmentSamplesOf(data, trackIndex)
+      if sampleIndex >= samples.len:
+        raise newException(MovieError, "mp4: sample index past the track")
+      return data[samples[sampleIndex].span]
     let reader = Reader(data: data)
     let moov = findBox(reader.bytes, 0, data.len, ["moov"])
     if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
@@ -381,6 +525,7 @@ proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
   ensure:
     result >= 0
   body:
+    if fragmented(data): return fragmentSamplesOf(data, trackIndex).len
     let reader = Reader(data: data)
     let moov = findBox(reader.bytes, 0, data.len, ["moov"])
     if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
@@ -415,6 +560,10 @@ proc sampleTiming*(data: string; trackIndex: int):
   require:
     trackIndex >= 0
   body:
+    if fragmented(data):
+      for entry in fragmentSamplesOf(data, trackIndex):
+        result.add (entry.duration, entry.compositionOffset)
+      return
     let reader = Reader(data: data)
     let moov = findBox(reader.bytes, 0, data.len, ["moov"])
     if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
