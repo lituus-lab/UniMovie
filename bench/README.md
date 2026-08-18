@@ -55,15 +55,39 @@ block, so a second one appends rather than overwriting the first.
 
 | file | container | in process | ffprobe | ratio |
 | --- | --- | ---: | ---: | ---: |
-| tiny.mp4 | mp4 | 10.0 us | 18.7 ms | 1870x |
-| av.mp4 | mp4 | 12.0 us | 19.6 ms | 1635x |
-| rotated.mov | mp4 | 11.0 us | 20.4 ms | 1856x |
-| tiny.mkv | matroska | 10.0 us | 18.0 ms | 1796x |
-| tiny.webm | matroska | 10.0 us | 18.2 ms | 1817x |
-| tiny.avi | avi | 11.0 us | 19.3 ms | 1751x |
-| tiny.ts | mpegts | 14.0 us | 19.0 ms | 1354x |
-| tiny.ogv | ogg | 9.0 us | 18.0 ms | 1995x |
+| tiny.mp4 | mp4 | 20.0 us | 20.1 ms | 1005x |
+| av.mp4 | mp4 | 23.0 us | 20.9 ms | 907x |
+| rotated.mov | mp4 | 20.0 us | 26.2 ms | 1310x |
+| tiny.mkv | matroska | 19.0 us | 32.3 ms | 1698x |
+| tiny.webm | matroska | 19.0 us | 27.2 ms | 1429x |
+| tiny.avi | avi | 23.0 us | 19.9 ms | 867x |
+| tiny.ts | mpegts | 23.0 us | 21.5 ms | 933x |
+| tiny.ogv | ogg | 18.0 us | 19.6 ms | 1087x |
 
-Over the eight fixtures: 87 us in process, 151 ms through ffprobe.
+Over the eight fixtures: 165 us in process, 187 ms through ffprobe.
 
 <!-- /bench:machine=macosx-apple-m4 -->
+
+## Reading a header instead of a file
+
+An ISO base media file is read box by box, so a probe costs its `moov` rather
+than its media. The fixtures are a few kilobytes each and cannot show the
+difference; pass a real recording to see it:
+
+```sh
+nimble bench -- /path/to/a/recording.mp4
+```
+
+Measured that way on this machine, against the same reader given the whole file
+instead. The recordings are not in the repository — a file large enough to show
+the difference has no business in one — so these two rows cannot be reproduced
+by `nimble benchReadme` alone:
+
+| file | size | whole file | header only | ratio |
+| --- | ---: | ---: | ---: | ---: |
+| a 177 MB recording | 177 MB | 19.6 ms | 0.236 ms | 83x |
+| a 21 MB recording | 21 MB | 2.3 ms | 0.045 ms | 50x |
+
+The ratio grows with the file because only one side of it does. Resident memory
+moves the same way: 374 MB against 6 MB on the 177 MB file, measured with
+`/usr/bin/time -l`.
