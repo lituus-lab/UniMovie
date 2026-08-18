@@ -7,7 +7,7 @@
 ```bash
 nimble install -y
 nimble testAll     # Nim debug + release + C ABI
-nimble pyTest      # Cython + pytest (needs libUniMovie.so)
+nimble pyTest      # Cython + pytest (needs the built libUniMovie)
 nimble ctest       # C ABI only
 nimble example     # Nim demo
 nimble cexample    # C demo
@@ -22,8 +22,9 @@ nimble benchReadme # bench, then splice its output into bench/README.md
 `nimble docs` needs a complete Nim distribution: `--project` builds `dochack`,
 which Homebrew's `nim` omits (no `tools/`). choosenim and the CI action ship it.
 
-CI: 3-OS Nim matrix, C ABI on linux/macOS, Python on linux, plus lint,
-checkVGraph, coverage and docs.
+CI, twelve jobs: `dco` and `spdx`; `test`, `cabi`, `python`, `consume-cabi` and
+`consume-wheel` on ubuntu/macOS/Windows; `lint` (which also runs
+`checkVGraph`), `docs`, `pages`, `bench` and `coverage` on ubuntu.
 
 ## Conventions
 

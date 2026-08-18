@@ -74,7 +74,7 @@ may be decoded here without that reservation.
 
 | Container | Limitations |
 |---|---|
-| MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Read box by box from a file, so a probe costs `moov` rather than the media. Fragmented files (`moof`) are not read: their samples live in tables this build does not walk. |
+| MP4, M4V, MOV, 3GP | Tracks, timescales, durations, dimensions, rotation, sync-sample index, and the coded bytes of any sample. Read box by box from a file, so a probe costs `moov` rather than the media. A fragmented file is read too: its samples live in the `trun` boxes inside each `moof`, and the walk finds them there. |
 | Matroska, WebM | Doc type, timescale, duration, tracks, codecs and dimensions from the header elements, and the coded bytes of any frame by walking the Clusters. No keyframe index — Cues would give one. `newMatroskaWriter` writes the format as well as reads it. |
 | AVI | Streams, codecs, dimensions, frame count and duration from `hdrl`, and the coded bytes of any chunk by walking `movi`. AVI has no sync-sample table; a keyframe index would have to come from the per-chunk flags. |
 | MPEG-TS, M2TS, MTS | Streams and codecs from the program tables, duration from the span of the presentation timestamps, and the coded bytes of any access unit by reassembling its PES packets. The format carries no dimensions, so an H.264 one is read from the sequence parameter set — see below. The three packet sizes are told apart by the spacing of the sync bytes, not by the extension. |
@@ -124,8 +124,13 @@ matrix; anything migrating off `ffprobe` has to negate.
   the rhythm of their sync bytes because the format has no magic number.
 - **Ogg** — `src/UniMovie/ogg.nim`. Pages into logical streams, each identified
   by its first packet.
+- **Muxing** — `src/UniMovie/mux.nim` writes MP4, whole or fragmented, and
+  `matroska.nim` writes Matroska and WebM. Boxes around samples somebody else
+  encoded; no encoder here.
 - **Dispatch** — `src/UniMovie/probe.nim` names a container from its bytes and
-  reads it; `src/UniMovie/c_api.nim` is the same library in C.
+  reads it; `src/UniMovie/c_api.nim` is the same library in C, and
+  `py/unimovie/` the same again in Python. Both carry the whole surface:
+  probing, sample access, timing, edit lists and every writer.
 
 ## The Uni* family
 
@@ -153,9 +158,12 @@ have been stable for decades.
 ## Benchmarks
 
 `nimble bench` measures what a probe costs against spawning `ffprobe` for the
-same answer; it is not part of the gate. `nimble benchReadme` runs it and writes
-the numbers into [bench/README.md](bench/README.md), tagged by machine, so
-nothing there is retyped by hand.
+same answer; it is not part of the gate. Give it a path — `nimble bench --
+/path/to/recording.mp4` — and it also compares reading that file whole against
+walking its boxes, which is the difference the fixtures are too small to show.
+`nimble benchReadme` runs it and writes the numbers into
+[bench/README.md](bench/README.md), tagged by machine, so nothing there is
+retyped by hand.
 
 ## Layout
 
@@ -198,7 +206,9 @@ nimble docs           # book + API reference -> pages/
 
 `test`, `cabi` and `python` on ubuntu/macOS/Windows. `consume-cabi` and
 `consume-wheel` rebuild against the published artifacts on a machine without Nim,
-so what ships is what was tested. `coverage` and `docs` run on ubuntu.
+so what ships is what was tested — on the same three. `spdx`, `lint` (which also
+checks the dependency directions), `docs`, `pages`, `bench` and `coverage` run
+on ubuntu alone.
 
 `dco` blocks PRs missing a `Signed-off-by` trailer; `commitizen` blocks PRs whose
 commits or title are not [Conventional Commits](https://www.conventionalcommits.org/)
