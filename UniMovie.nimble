@@ -37,21 +37,25 @@ task test, "Nim tests (debug, contracts active)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
   exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
   exec "nim c -r --path:src -o:build/test_mux tests/test_mux.nim"
+  exec "nim c -r --path:src -o:build/test_samples tests/test_samples.nim"
 
 task testRelease, "Nim tests (release, contracts compiled away)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
   exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
   exec "nim c -r -d:release --path:src -o:build/test_mux_rel tests/test_mux.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_samples_rel tests/test_samples.nim"
 
 task testCi, "Nim tests (CI subset, debug)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
   exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
   exec "nim c -r --path:src -o:build/test_mux tests/test_mux.nim"
+  exec "nim c -r --path:src -o:build/test_samples tests/test_samples.nim"
 
 task testCiRelease, "Nim tests (CI subset, release)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
   exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
   exec "nim c -r -d:release --path:src -o:build/test_mux_rel tests/test_mux.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_samples_rel tests/test_samples.nim"
 
 task testAll, "debug + release + C ABI":
   exec "nimble test"

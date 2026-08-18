@@ -15,11 +15,6 @@ import contracts
 import std/strutils
 import ./types
 
-const
-  MaxChunkBytes = 1 shl 30
-    ## A chunk claiming more than a gigabyte is refused rather than trusted.
-    ## The ones this reader descends into are headers, not media.
-
 type Cursor = object
   ## A position in the file and the end of the list being read. RIFF nests by
   ## length, so a chunk cannot escape its parent.
@@ -31,6 +26,18 @@ func leU16(data: string; at: int): int =
   ## Two little-endian bytes. RIFF is little-endian throughout, the opposite of
   ## ISOBMFF.
   int(uint8(data[at])) or (int(uint8(data[at + 1])) shl 8)
+
+func scaledDuration(units, scale: int64; what: string): int64 =
+  ## `units * scale`, refusing a product no `int64` holds.
+  ##
+  ## Both factors come from 32-bit header fields, so a file is free to claim
+  ## four billion frames at four billion microseconds each. That product is
+  ## past `int64`, and an unchecked build wraps it silently into a negative
+  ## duration rather than stopping — which is why this is a check and not an
+  ## overflow trap.
+  if units != 0 and scale > high(int64) div units:
+    raise newException(MovieError, "avi: implausible " & what)
+  units * scale
 
 func leU32(data: string; at: int): int64 =
   ## Four little-endian bytes, widened so a size near 2^32 stays positive.
@@ -51,9 +58,13 @@ iterator chunks(cursor: var Cursor): tuple[id: string; at, size: int] =
   while cursor.at + 8 <= cursor.limit:
     let id = fourCC(cursor.data, cursor.at)
     let size = leU32(cursor.data, cursor.at + 4)
-    if size < 0 or size > MaxChunkBytes: break
     let body = cursor.at + 8
-    if body + int(size) > cursor.limit: break
+    # Bounded by what the parent actually holds, not by a fixed ceiling. The
+    # file is already in memory, so the parent span is the real limit; a
+    # `LIST movi` past a gigabyte is an ordinary recording, and refusing it
+    # would end the walk and report a file with no frames in it. Compared
+    # before the conversion, so a declared size no `int` holds cannot wrap.
+    if size < 0 or size > int64(cursor.limit - body): break
     yield (id, body, int(size))
     cursor.at = body + int(size) + (int(size) and 1)
 
@@ -103,7 +114,7 @@ proc parseStrl(data: string; at, size: int): Track =
     else: discard
   if scale > 0 and rate > 0:
     result.timescale = int(rate)
-    result.duration = length * scale
+    result.duration = scaledDuration(length, scale, "stream duration")
   result.sampleCount = int(length)
 
 proc readAvi*(data: string): Movie {.contractual.} =
@@ -140,7 +151,8 @@ proc readAvi*(data: string): Movie {.contractual.} =
             # rate of 29.97 is 33367 microseconds, which no integer timescale
             # in seconds represents.
             result.timescale = 1_000_000
-            result.duration = totalFrames * microsPerFrame
+            result.duration = scaledDuration(totalFrames, microsPerFrame,
+                                             "movie duration")
         of "LIST":
           if listSize < 4 or fourCC(data, listAt) != "strl": continue
           if result.tracks.len >= MaxTracks:
@@ -166,5 +178,105 @@ proc readAviFile*(path: string): Movie {.contractual.} =
     path.len > 0
   body:
     readAvi(readFile(path))
+
+
+
+
+# The media, which the header walk above deliberately skips. It sits in
+# `LIST movi` as one chunk per frame, named for the stream it belongs to:
+# `00dc` is stream 0, compressed video; `01wb` is stream 1, audio.
+
+func carriesMedia(id: string): bool =
+  ## Whether a chunk name says it holds media rather than control.
+  ##
+  ## `db` and `dc` are video frames, uncompressed and compressed; `wb` is
+  ## audio. `pc` is a palette change — it belongs to the stream and is not a
+  ## sample of it, so returning one as a coded frame would hand a caller
+  ## bytes no decoder asked for.
+  ##
+  ## Matched without regard to case, since a muxer is free to write `DC`.
+  ## This stays a list of what is media rather than of what is not, so an
+  ## uppercase `PC` is excluded by the same rule as a lowercase one.
+  id.len == 4 and id[2 .. 3].toLowerAscii in ["db", "dc", "wb"]
+
+func streamOf(id: string): int =
+  ## The stream a media chunk belongs to, from the two digits its name starts
+  ## with, or -1 for a chunk that names no stream. AVI writes the number in
+  ## ASCII, so stream 10 really is the characters `1` and `0`.
+  if id.len < 4: return -1
+  if id[0] notin '0' .. '9' or id[1] notin '0' .. '9': return -1
+  (ord(id[0]) - ord('0')) * 10 + (ord(id[1]) - ord('0'))
+
+iterator streamChunks(data: string; stream: int): Slice[int] =
+  ## Every media chunk of one stream, in file order.
+  ##
+  ## Walks `movi` rather than reading `idx1`, because an index's offsets are
+  ## written relative to the file in some encoders and to `movi` in others,
+  ## with nothing in the file to say which — and a walk cannot be wrong about
+  ## it. A file past four gigabytes continues in further `RIFF AVIX` segments,
+  ## which are walked as well.
+  ##
+  ## `LIST rec ` groups the chunks of one frame together for playback off slow
+  ## media; it is descended into, since the chunks a caller wants are inside it.
+  var top = Cursor(data: data, at: 12, limit: data.len)
+  for id, at, size in top.chunks:
+    var movi = -1 .. -1
+    if id == "LIST" and size >= 4 and fourCC(data, at) == "movi":
+      movi = at + 4 ..< at + size
+    elif id == "RIFF" and size >= 4 and fourCC(data, at) == "AVIX":
+      var extension = Cursor(data: data, at: at + 4, limit: at + size)
+      for extId, extAt, extSize in extension.chunks:
+        if extId == "LIST" and extSize >= 4 and fourCC(data, extAt) == "movi":
+          movi = extAt + 4 ..< extAt + extSize
+          break
+    if movi.a < 0: continue
+    var cursor = Cursor(data: data, at: movi.a, limit: movi.b + 1)
+    for chunkId, chunkAt, chunkSize in cursor.chunks:
+      if chunkId == "LIST" and chunkSize >= 4 and fourCC(data, chunkAt) == "rec ":
+        var group = Cursor(data: data, at: chunkAt + 4,
+                           limit: chunkAt + chunkSize)
+        for groupId, groupAt, groupSize in group.chunks:
+          if streamOf(groupId) == stream and carriesMedia(groupId):
+            yield groupAt ..< groupAt + groupSize
+      elif streamOf(chunkId) == stream and carriesMedia(chunkId):
+        yield chunkAt ..< chunkAt + chunkSize
+
+proc codedSample*(data: string; trackIndex, sampleIndex: int): string
+    {.contractual.} =
+  ## The coded bytes of one chunk, exactly as the file holds them.
+  ##
+  ## Costs a walk of `movi` to that chunk. An empty chunk is a real thing in
+  ## AVI — it means the frame is unchanged from the one before — and comes back
+  ## as an empty string rather than being skipped, so indices keep matching the
+  ## stream's own frame numbering.
+  require:
+    trackIndex >= 0
+    sampleIndex >= 0
+  body:
+    if trackIndex >= readAvi(data).tracks.len:
+      raise newException(MovieError, "avi: stream index past the file")
+    var seen = 0
+    for span in streamChunks(data, trackIndex):
+      if seen == sampleIndex: return data[span]
+      inc seen
+    raise newException(MovieError, "avi: sample index past the stream")
+
+proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
+  ## How many media chunks a stream holds.
+  ##
+  ## `strh` also declares a length, which `readAvi` reports as `sampleCount`;
+  ## this is what the file actually contains. The two disagree on a recording
+  ## that was cut short, and this one is the number a caller can index up to.
+  require:
+    trackIndex >= 0
+  ensure:
+    result >= 0
+  body:
+    # The index is checked against the header rather than left to yield
+    # nothing: a stream that does not exist and one that holds no chunk are
+    # different answers, and 0 for both would hide the first.
+    if trackIndex >= readAvi(data).tracks.len:
+      raise newException(MovieError, "avi: stream index past the file")
+    for span in streamChunks(data, trackIndex): inc result
 
 

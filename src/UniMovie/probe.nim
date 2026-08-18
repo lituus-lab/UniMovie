@@ -64,6 +64,55 @@ proc readMovie*(data: string): Movie {.contractual.} =
     of cUnknown:
       raise newException(MovieError, "unrecognised video container")
 
+proc codedSample*(data: string; trackIndex, sampleIndex: int): string
+    {.contractual.} =
+  ## The coded bytes of one sample, from whichever container the bytes turn out
+  ## to be.
+  ##
+  ## This is the boundary: nothing here interprets them, and what comes back is
+  ## the form that container stores. An H.264 track in an MP4 gives
+  ## length-prefixed units and the same track in a transport stream gives start
+  ## codes, because that is what each file holds — converting between them is
+  ## the decoder backend's business, and doing it here would hide from a caller
+  ## which form it has.
+  ##
+  ## The cost differs as sharply as the form. ISO base media reads an offset
+  ## from a table; Matroska, AVI, Ogg and MPEG-TS index nothing, so reaching
+  ## sample n means walking to it.
+  require:
+    trackIndex >= 0
+    sampleIndex >= 0
+  body:
+    case sniff(data)
+    of cIsoBmff: isobmff.codedSample(data, trackIndex, sampleIndex)
+    of cMatroska: matroska.codedSample(data, trackIndex, sampleIndex)
+    of cAvi: avi.codedSample(data, trackIndex, sampleIndex)
+    of cMpegTs: mpegts.codedSample(data, trackIndex, sampleIndex)
+    of cOgg: ogg.codedSample(data, trackIndex, sampleIndex)
+    of cUnknown:
+      raise newException(MovieError, "unrecognised video container")
+
+proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
+  ## How many coded samples a track holds, from whichever container the bytes
+  ## turn out to be.
+  ##
+  ## `Track.sampleCount` reports 0 for the containers that declare no count;
+  ## this walks and finds out, so a caller iterating a track has a bound in
+  ## every case.
+  require:
+    trackIndex >= 0
+  ensure:
+    result >= 0
+  body:
+    case sniff(data)
+    of cIsoBmff: isobmff.codedSampleCount(data, trackIndex)
+    of cMatroska: matroska.codedSampleCount(data, trackIndex)
+    of cAvi: avi.codedSampleCount(data, trackIndex)
+    of cMpegTs: mpegts.codedSampleCount(data, trackIndex)
+    of cOgg: ogg.codedSampleCount(data, trackIndex)
+    of cUnknown:
+      raise newException(MovieError, "unrecognised video container")
+
 proc readMovieFile*(path: string): Movie {.contractual.} =
   ## `readMovie` over a file, read whole.
   ##

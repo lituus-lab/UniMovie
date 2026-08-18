@@ -189,3 +189,96 @@ proc readOggFile*(path: string): Movie {.contractual.} =
     readOgg(readFile(path))
 
 
+
+
+# The media. Unlike every other container here, an Ogg packet is not a slice of
+# the file: a packet longer than a page is split across pages and has to be put
+# back together, which is why these return a string rather than a span.
+
+iterator streamPackets(data: string; serial: int64): string =
+  ## Every packet of one logical stream, in order, reassembled.
+  ##
+  ## The lacing table is the only packet boundary Ogg has: segments of 255
+  ## bytes continue the packet, and the first shorter one ends it — a packet
+  ## that is an exact multiple of 255 therefore ends with a zero-length
+  ## segment, which is why the test is on the length and not on there being
+  ## anything left.
+  ##
+  ## A file that begins part-way through a stream leaves a fragment that never
+  ## completes; it is dropped rather than yielded, since half a packet is not
+  ## one.
+  var pending = ""
+  var at = 0
+  var pages = 0
+  while at + 27 <= data.len and pages < MaxPages:
+    let page = parsePage(data, at)
+    if page.serial < 0 or page.size <= 0: break
+    inc pages
+    if page.serial == serial:
+      let segments = int(uint8(data[at + 26]))
+      let tableAt = at + 27
+      var payloadAt = page.payloadAt
+      for index in 0 ..< segments:
+        let lacing = int(uint8(data[tableAt + index]))
+        pending.add data[payloadAt ..< payloadAt + lacing]
+        payloadAt += lacing
+        if lacing < 255:
+          yield pending
+          pending = ""
+    at += page.size
+
+proc streamsOf(data: string): seq[tuple[serial: int64; headers: int]] =
+  ## The streams `readOgg` reports, in the order it reports them, each with how
+  ## many header packets precede its media. Streams it declines to name are left
+  ## out here too, so a track index means the same thing in both.
+  var at = 0
+  var pages = 0
+  var serials: seq[int64]
+  while at + 27 <= data.len and pages < MaxPages:
+    let page = parsePage(data, at)
+    if page.serial < 0 or page.size <= 0: break
+    inc pages
+    if page.first and serials.find(page.serial) < 0:
+      if serials.len >= MaxStreams: break
+      serials.add page.serial
+      let stream = identify(data, page.payloadAt, page.payloadLen)
+      if not (stream.kind == tkOther and stream.codec.len == 0):
+        result.add (page.serial, stream.headers)
+    at += page.size
+
+proc codedSample*(data: string; trackIndex, sampleIndex: int): string
+    {.contractual.} =
+  ## The coded bytes of one packet, exactly as the file holds them, with the
+  ## codec's header packets already skipped — sample 0 is the first frame, not
+  ## the identification header.
+  ##
+  ## Costs a walk from the first page, and reassembles a packet that spans
+  ## pages.
+  require:
+    trackIndex >= 0
+    sampleIndex >= 0
+  body:
+    let streams = streamsOf(data)
+    if trackIndex >= streams.len:
+      raise newException(MovieError, "ogg: track index past the file")
+    var seen = -streams[trackIndex].headers
+    for packet in streamPackets(data, streams[trackIndex].serial):
+      if seen == sampleIndex: return packet
+      inc seen
+    raise newException(MovieError, "ogg: sample index past the stream")
+
+proc codedSampleCount*(data: string; trackIndex: int): int {.contractual.} =
+  ## How many media packets a stream holds, headers excluded.
+  require:
+    trackIndex >= 0
+  ensure:
+    result >= 0
+  body:
+    let streams = streamsOf(data)
+    if trackIndex >= streams.len:
+      raise newException(MovieError, "ogg: track index past the file")
+    var seen = 0
+    for packet in streamPackets(data, streams[trackIndex].serial): inc seen
+    result = max(seen - streams[trackIndex].headers, 0)
+
+
