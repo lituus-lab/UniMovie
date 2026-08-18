@@ -17,7 +17,12 @@ proc ffprobeField(path, entries: string): string =
   let (output, code) = execCmdEx("ffprobe -v error -select_streams v:0 " &
     "-show_entries " & entries & " -of default=nw=1:nk=1 " & path.quoteShell)
   if code != 0: return ""
-  output.strip()
+  # A transport stream makes ffprobe print the entry more than once, so take
+  # the first non-empty line rather than the whole output.
+  for line in output.splitLines():
+    let value = line.strip()
+    if value.len > 0: return value
+  ""
 
 suite "mp4 shape":
   test "a video-only file reports its track":

@@ -12,6 +12,8 @@ import ./types
 import ./isobmff
 import ./matroska
 import ./avi
+import ./mpegts
+import ./ogg
 
 type Container* = enum
   ## What a file's leading bytes say it is.
@@ -19,17 +21,25 @@ type Container* = enum
   cIsoBmff = "mp4"       ## MP4, MOV, M4V, 3GP — one format under four names
   cMatroska = "matroska" ## MKV and WebM
   cAvi = "avi"
+  cMpegTs = "mpegts"     ## TS, M2TS, MTS — one format, three packet sizes
+  cOgg = "ogg"           ## OGV
 
 func sniff*(data: string): Container =
   ## Identify a container from its leading bytes, without reading its tables.
   ##
   ## `ftyp` is not at offset zero — it follows a four-byte box length — which is
-  ## why this looks at byte 4 for ISOBMFF and byte 0 for the other two.
+  ## why this looks at byte 4 for ISOBMFF and byte 0 for the others. A transport
+  ## stream has no magic at all and is recognised by the spacing of its sync
+  ## bytes, so it is tried last.
   if data.len < 12: return cUnknown
   if data[0 .. 3] == "\x1A\x45\xDF\xA3": return cMatroska
   if data[0 .. 3] == "RIFF" and data[8 .. 11] == "AVI ": return cAvi
+  if data[0 .. 3] == "OggS": return cOgg
   if data[4 .. 7] in ["ftyp", "moov", "mdat", "free", "skip", "wide"]:
     return cIsoBmff
+  # A transport stream has no magic number: it is recognised by its rhythm, so
+  # it is tried last, after every format that does have one.
+  if isMpegTs(data): return cMpegTs
   cUnknown
 
 func reads*(container: Container): bool =
@@ -49,6 +59,8 @@ proc readMovie*(data: string): Movie {.contractual.} =
     of cIsoBmff: isobmff.readMovie(data)
     of cMatroska: readMatroska(data)
     of cAvi: readAvi(data)
+    of cMpegTs: readMpegTs(data)
+    of cOgg: readOgg(data)
     of cUnknown:
       raise newException(MovieError, "unrecognised video container")
 
@@ -76,8 +88,10 @@ proc sniffFile*(path: string): Container {.contractual.} =
     if not handle.open(path):
       raise newException(IOError, "cannot open " & path)
     defer: handle.close()
-    var head = newString(16)
-    let read = handle.readBuffer(addr head[0], 16)
+    # Enough packets for a transport stream's rhythm to show: eight at the
+    # largest packet size, plus room for the offset a .m2ts starts at.
+    var head = newString(4096)
+    let read = handle.readBuffer(addr head[0], 4096)
     head.setLen(read)
     sniff(head)
 
