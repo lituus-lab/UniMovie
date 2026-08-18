@@ -13,11 +13,66 @@
 #include <stdlib.h>
 #include <string.h>
 
-int main(int argc, char **argv) {
-  const char *path = argc > 1 ? argv[1] : "../fixtures/tiny.mp4";
 
+/* Where the fixtures are depends on where this was launched: `nimble ctest`
+ * runs it from tests/c, the artifact-consumer job from the repository root.
+ * Rather than pick one, look for the directory and skip what needs it when it
+ * is nowhere to be found — a consumer checking the shipped header and library
+ * has no fixtures and should still be able to run this. */
+static char fixtures[512];
+
+static int find_fixtures(void) {
+  static const char *candidates[] = {
+    "../fixtures/", "tests/fixtures/", "../../tests/fixtures/"
+  };
+  const char *given = getenv("UNIMOVIE_FIXTURES");
+  char probe[600];
+  if (given != NULL && given[0] != '\0') {
+    const size_t length = strlen(given);
+    const char *tail = (length > 0 && (given[length - 1] == '/' ||
+                                       given[length - 1] == '\\')) ? "" : "/";
+    snprintf(fixtures, sizeof fixtures, "%s%s", given, tail);
+  } else {
+    for (size_t i = 0; i < sizeof candidates / sizeof candidates[0]; i++) {
+      snprintf(probe, sizeof probe, "%stiny.mp4", candidates[i]);
+      FILE *f = fopen(probe, "rb");
+      if (f != NULL) {
+        fclose(f);
+        snprintf(fixtures, sizeof fixtures, "%s", candidates[i]);
+        return 1;
+      }
+    }
+    return 0;
+  }
+  snprintf(probe, sizeof probe, "%stiny.mp4", fixtures);
+  FILE *f = fopen(probe, "rb");
+  if (f == NULL) return 0;
+  fclose(f);
+  return 1;
+}
+
+/* Join the fixture directory and a name into `out`. */
+static const char *fixture(char *out, size_t size, const char *name) {
+  snprintf(out, size, "%s%s", fixtures, name);
+  return out;
+}
+
+int main(int argc, char **argv) {
+  const int have_fixtures = find_fixtures();
+  char paths[6][600];
+
+  /* What holds with or without a file to read holds first. */
   assert(strlen(umov_version()) > 0);
   assert(strcmp(umov_last_error(), "") == 0);
+
+  if (!have_fixtures) {
+    printf("note: no fixtures found, skipping what needs a movie\n");
+    printf("c abi: ok\n");
+    return 0;
+  }
+
+  const char *path = argc > 1 ? argv[1]
+                              : fixture(paths[0], sizeof paths[0], "tiny.mp4");
 
   int tracks = 0, video = -2, audio = -2;
   double duration = -1.0;
@@ -44,7 +99,7 @@ int main(int argc, char **argv) {
    * value is degrees clockwise, so an ordinal would read as 3 and pass a
    * check written against UMOV_ROT_270 only by accident. */
   {
-    const char *rotated = argc > 2 ? argv[2] : "../fixtures/rotated.mov";
+    const char *rotated = argc > 2 ? argv[2] : fixture(paths[1], sizeof paths[1], "rotated.mov");
     int rkind = -1, rwidth = 0, rheight = 0, rrot = -1, rsamples = 0, rkeys = 0;
     char rcodec[5];
     assert(umov_track(rotated, 0, &rkind, rcodec, &rwidth, &rheight, &rrot,
@@ -71,7 +126,7 @@ int main(int argc, char **argv) {
   /* A Matroska file through the same entry point: the ABI dispatches on the
    * bytes, so one call serves every container this build reads. */
   {
-    const char *mkv = argc > 3 ? argv[3] : "../fixtures/tiny.mkv";
+    const char *mkv = argc > 3 ? argv[3] : fixture(paths[2], sizeof paths[2], "tiny.mkv");
     int mtracks = 0, mvideo = -1, maudio = -1;
     double mduration = 0.0;
     char mformat[16];
@@ -84,7 +139,7 @@ int main(int argc, char **argv) {
 
   /* The coded size, which is not the displayed one on an anamorphic source. */
   {
-    const char *ana = argc > 4 ? argv[4] : "../fixtures/anamorphic.mp4";
+    const char *ana = argc > 4 ? argv[4] : fixture(paths[3], sizeof paths[3], "anamorphic.mp4");
     int aw = 0, ah = 0, cw = 0, ch = 0;
     int akind, arot, asamples, akeys;
     char acodec[5];
@@ -101,7 +156,7 @@ int main(int argc, char **argv) {
     char sniffed[16];
     assert(umov_sniff(path, sniffed) == UMOV_OK);
     assert(strcmp(sniffed, "mp4") == 0);
-    assert(umov_sniff("../fixtures/tiny.ts", sniffed) == UMOV_OK);
+    assert(umov_sniff(fixture(paths[4], sizeof paths[4], "tiny.ts"), sniffed) == UMOV_OK);
     assert(strcmp(sniffed, "mpegts") == 0);
   }
 
@@ -110,7 +165,8 @@ int main(int argc, char **argv) {
   {
     double latitude = -1.0, longitude = -1.0;
     int found = -1;
-    assert(umov_location("../fixtures/located.mov", &latitude, &longitude,
+    assert(umov_location(fixture(paths[5], sizeof paths[5], "located.mov"),
+                         &latitude, &longitude,
                          &found) == UMOV_OK);
     assert(found == 1);
     assert(latitude > 45.9 && latitude < 46.0);
@@ -118,6 +174,36 @@ int main(int argc, char **argv) {
     assert(umov_location(path, &latitude, &longitude, &found) == UMOV_OK);
     assert(found == 0);
     assert(umov_location(NULL, &latitude, &longitude, &found) == UMOV_ERR_ARG);
+  }
+
+  /* Correcting a wrong camera clock. Works on a copy: rewriting a fixture
+   * would make the next run test something else. */
+  {
+    const char *copy = "build_c_date_copy.mp4";
+    FILE *in = fopen(path, "rb");
+    FILE *out = fopen(copy, "wb");
+    char buffer[8192];
+    size_t n;
+    long long seconds = 0;
+    int found = -1, changed = -1;
+    assert(in != NULL && out != NULL);
+    while ((n = fread(buffer, 1, sizeof buffer, in)) > 0)
+      assert(fwrite(buffer, 1, n, out) == n);
+    fclose(in);
+    fclose(out);
+
+    /* 2019-08-14T10:30:00Z */
+    assert(umov_set_creation_date(copy, copy, 1565778600LL, &changed) == UMOV_OK);
+    assert(changed >= 3);   /* mvhd, plus tkhd and mdhd for the one track */
+    assert(umov_creation_date(copy, &seconds, &found) == UMOV_OK);
+    assert(found == 1);
+    assert(seconds == 1565778600LL);
+
+    /* A date before the 1904 epoch cannot be represented and is refused. */
+    assert(umov_set_creation_date(copy, copy, -3000000000LL, &changed) ==
+           UMOV_ERR_FORMAT);
+    assert(umov_set_creation_date(NULL, copy, 0LL, &changed) == UMOV_ERR_ARG);
+    remove(copy);
   }
 
   /* Coded samples, sized then fetched. */
@@ -269,6 +355,17 @@ int main(int argc, char **argv) {
     assert(umov_writer_open("abi-bad.mp4", UMOV_WRITER_MP4, &sizeless, 1, &h) ==
            UMOV_ERR_FORMAT);
     remove("abi-bad.mp4");
+  }
+
+  /* An index past the tracks the file has is a bad argument, not a bad file:
+   * the header says so, and a caller distinguishes the two by the status. */
+  {
+    int range_count = 0;
+    size_t range_written = 0;
+    assert(umov_coded_sample_count(path, 99, &range_count) == UMOV_ERR_ARG);
+    assert(umov_coded_sample(path, 99, 0, NULL, 0, &range_written) ==
+           UMOV_ERR_ARG);
+    assert(umov_coded_sample_count(path, -1, &range_count) == UMOV_ERR_ARG);
   }
 
   printf("c abi: ok\n");
