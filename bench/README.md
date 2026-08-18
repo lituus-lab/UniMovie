@@ -55,16 +55,16 @@ block, so a second one appends rather than overwriting the first.
 
 | file | container | in process | ffprobe | ratio |
 | --- | --- | ---: | ---: | ---: |
-| tiny.mp4 | mp4 | 20.0 us | 20.1 ms | 1005x |
-| av.mp4 | mp4 | 23.0 us | 20.9 ms | 907x |
-| rotated.mov | mp4 | 20.0 us | 26.2 ms | 1310x |
-| tiny.mkv | matroska | 19.0 us | 32.3 ms | 1698x |
-| tiny.webm | matroska | 19.0 us | 27.2 ms | 1429x |
-| tiny.avi | avi | 23.0 us | 19.9 ms | 867x |
-| tiny.ts | mpegts | 23.0 us | 21.5 ms | 933x |
-| tiny.ogv | ogg | 18.0 us | 19.6 ms | 1087x |
+| tiny.mp4 | mp4 | 20.0 us | 22.0 ms | 1098x |
+| av.mp4 | mp4 | 23.0 us | 22.3 ms | 967x |
+| rotated.mov | mp4 | 21.0 us | 20.8 ms | 990x |
+| tiny.mkv | matroska | 19.0 us | 20.9 ms | 1098x |
+| tiny.webm | matroska | 19.0 us | 22.0 ms | 1155x |
+| tiny.avi | avi | 20.0 us | 21.2 ms | 1058x |
+| tiny.ts | mpegts | 23.0 us | 21.9 ms | 951x |
+| tiny.ogv | ogg | 20.0 us | 20.8 ms | 1040x |
 
-Over the eight fixtures: 165 us in process, 187 ms through ffprobe.
+Over the eight fixtures: 164 us in process, 171 ms through ffprobe.
 
 <!-- /bench:machine=macosx-apple-m4 -->
 
