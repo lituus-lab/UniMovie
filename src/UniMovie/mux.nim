@@ -28,8 +28,33 @@ const
   MaxWriterSamples* = 1 shl 24
     ## Sixteen million samples is days of video. The bound is on the sample
     ## table this holds in memory, not on the media written past it.
+  MaxWriterEdits* = 1024
+    ## An edit list is a handful of entries in every file that has one at all;
+    ## a caller asking for more is refused rather than allocated for.
 
 type
+  Edit* = object
+    ## One entry of a track's edit list: which stretch of its media plays, and
+    ## for how long on the presentation clock.
+    ##
+    ## Two shapes cover almost every real use. An **empty edit** — `mediaTime`
+    ## of -1 — holds the track blank for `duration`, which is how a track that
+    ## starts late stays in sync with one that does not. A **trim** —
+    ## `mediaTime` of *n* — starts playback *n* units into the media, which is
+    ## how an encoder's own priming samples are kept out of what is heard.
+    ##
+    ## The media rate is always 1. A rate other than 1 asks a player to
+    ## resample, which is a decision about the content rather than about the
+    ## container, and leaving it out means no caller writes 0 by forgetting to
+    ## set it.
+    duration*: int64
+      ## How long this edit lasts, in the **movie** timescale — milliseconds.
+      ## Zero means the rest of the track: the whole media duration for a trim,
+      ## which a caller cannot compute before the last sample is written.
+    mediaTime*: int64
+      ## Where in the media this edit starts, in the **track's** timescale, or
+      ## -1 for an empty edit that plays nothing.
+
   TrackParams* = object
     ## What a track is, before any sample of it exists.
     kind*: TrackKind
@@ -53,6 +78,10 @@ type
       ## That box's payload, exactly as the encoder produced it. Never parsed
       ## here: a parameter set is the decoder's business, and copying it
       ## unexamined is what keeps this a muxer.
+    edits*: seq[Edit]
+      ## The track's edit list, or empty for none — which is what a track whose
+      ## media starts at zero and plays through wants, and writes no `edts` box
+      ## at all.
 
   Sample = object
     size: int
@@ -109,6 +138,15 @@ proc newMp4Writer*(stream: Stream; tracks: openArray[TrackParams]): Mp4Writer
           (track.width notin 1 .. MaxDimension or
            track.height notin 1 .. MaxDimension):
         raise newException(MovieError, "mp4: a video track needs its size")
+      if track.edits.len > MaxWriterEdits:
+        raise newException(MovieError, "mp4: implausible edit list")
+      for edit in track.edits:
+        # Both fields go into the file as 32 bits, and -1 is the one negative
+        # media time the format gives a meaning to.
+        if edit.duration notin 0'i64 .. high(uint32).int64:
+          raise newException(MovieError, "mp4: an edit duration is out of range")
+        if edit.mediaTime < -1 or edit.mediaTime > high(int32).int64:
+          raise newException(MovieError, "mp4: an edit media time is out of range")
 
     if stream == nil:
       raise newException(IOError, "mp4: no stream to write to")
@@ -365,7 +403,23 @@ func trackBox(params: TrackParams; samples: seq[Sample];
 
   let minf = box("minf", mediaHeader & dinf & box("stbl", stbl))
   let mdia = box("mdia", fullBox("mdhd", mdhd) & fullBox("hdlr", hdlr) & minf)
-  box("trak", fullBox("tkhd", tkhd) & mdia)
+
+  # `edts` sits between the track header and the media, and only when the
+  # caller asked for one: a track with no edit list plays its media from the
+  # start, which is what its absence already says.
+  var edts: string
+  if params.edits.len > 0:
+    var elst: string
+    elst.putBE(int64(params.edits.len), 4)
+    for edit in params.edits:
+      # A zero duration means the rest of the track, which is a length only
+      # known now that every sample is in.
+      let span = if edit.duration > 0: edit.duration else: movieDuration
+      elst.putBE(span, 4)
+      elst.putBE(edit.mediaTime, 4) # -1 writes as 0xFFFFFFFF, the empty edit
+      elst.putBE(0x0001_0000, 4) # media rate 1.0, as 16.16
+    edts = box("edts", fullBox("elst", elst))
+  box("trak", fullBox("tkhd", tkhd) & edts & mdia)
 
 proc close*(writer: var Mp4Writer) {.contractual.} =
   ## Write `moov` and close the file. The writer is spent afterwards.

@@ -16,6 +16,13 @@ somebody else encoded, and never produces one. That is the same boundary the
 reading half keeps: ISO 14496-12 describes the container and nothing here
 implements a codec.
 
+A track may carry an edit list, which is how a presentation says something
+other than *play the media from its start*. Two shapes cover nearly every use:
+an empty edit holds a track blank so one that starts late stays in sync, and a
+trim starts playback partway in — which is what cancels the display offset a
+reordered stream begins with. A track given no edits writes no `edts` box, and
+that absence says the same thing as an edit that plays everything.
+
 The file that comes out does hold a coded stream, so whoever ran the encoder
 carries whatever obligation that stream carries. A caller with a system encoder
 — VideoToolbox, Media Foundation — hands over the bytes it produced and gets a
