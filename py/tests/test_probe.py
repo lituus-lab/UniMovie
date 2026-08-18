@@ -6,6 +6,7 @@ import pathlib
 import pytest
 
 from unimovie import (WRITER_MATROSKA, WRITER_MP4, WRITER_MP4_FRAGMENTED,
+                      location,
                       WRITER_WEBM, UniMovieError, coded_sample,
                       coded_sample_count, edit_list, open_writer, probe,
                       sample_timing, sniff, track, track_sizes, tracks,
@@ -184,3 +185,10 @@ def test_a_spent_writer_refuses_a_second_close(tmp_path):
     writer.write(0, b"\x00\x01\x02", 100)
     writer.close()
     writer.close()  # a second close is a no-op, not an error
+
+
+def test_a_recording_reports_where_it_was_made():
+    assert location(FIXTURES / "located.mov") == pytest.approx((45.9374, 6.6387))
+    # Most files carry none, and 0,0 is a real point in the Atlantic — so
+    # absence comes back as nothing rather than as a pair of zeros.
+    assert location(FIXTURES / "tiny.mp4") is None

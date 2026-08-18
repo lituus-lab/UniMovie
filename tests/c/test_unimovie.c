@@ -105,6 +105,21 @@ int main(int argc, char **argv) {
     assert(strcmp(sniffed, "mpegts") == 0);
   }
 
+  /* Where a recording says it was made. Absence is reported as absence: 0,0
+   * is a real point in the Atlantic, so the flag is what a caller reads. */
+  {
+    double latitude = -1.0, longitude = -1.0;
+    int found = -1;
+    assert(umov_location("../fixtures/located.mov", &latitude, &longitude,
+                         &found) == UMOV_OK);
+    assert(found == 1);
+    assert(latitude > 45.9 && latitude < 46.0);
+    assert(longitude > 6.6 && longitude < 6.7);
+    assert(umov_location(path, &latitude, &longitude, &found) == UMOV_OK);
+    assert(found == 0);
+    assert(umov_location(NULL, &latitude, &longitude, &found) == UMOV_ERR_ARG);
+  }
+
   /* Coded samples, sized then fetched. */
   {
     int count = 0;

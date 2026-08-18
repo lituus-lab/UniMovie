@@ -22,7 +22,7 @@ nothing here carries a codec::
 """
 from ._core import (WRITER_MATROSKA, WRITER_MP4, WRITER_MP4_FRAGMENTED,
                     WRITER_WEBM, UniMovieError, Writer, coded_sample,
-                    coded_sample_count, edit_list, open_writer, probe,
+                    coded_sample_count, edit_list, location, open_writer, probe,
                     sample_timing, sniff, track, track_sizes, tracks,
                     version as _version_c)
 
@@ -35,7 +35,8 @@ def version():
 
 
 __all__ = ["UniMovieError", "Writer", "coded_sample", "coded_sample_count",
-           "edit_list", "open_writer", "probe", "sample_timing", "sniff",
+           "edit_list", "location", "open_writer", "probe", "sample_timing",
+           "sniff",
            "track", "track_sizes", "tracks", "version",
            "WRITER_MP4", "WRITER_MP4_FRAGMENTED", "WRITER_MATROSKA",
            "WRITER_WEBM", "__version__"]

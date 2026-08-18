@@ -103,6 +103,13 @@ int umov_sample_timing(const char *path, int track, int *durations,
 int umov_edit_list(const char *path, int track, long long *durations,
                    long long *media_times, int capacity, int *written);
 
+/* Where a recording says it was made. found is 0 when the file carries no
+ * position, which most do not and which is not a failure -- latitude 0,
+ * longitude 0 is a real point in the Atlantic, so read found rather than
+ * testing the numbers. */
+int umov_location(const char *path, double *latitude, double *longitude,
+                  int *found);
+
 /* ---- Writing ---------------------------------------------------------- */
 
 /* Which shape of file to write. */

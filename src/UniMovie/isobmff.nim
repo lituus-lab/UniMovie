@@ -486,6 +486,104 @@ proc fragmentSamplesOf(data: string; trackIndex: int):
   let id = ids[trackIndex]
   fragmentSamples(data, id, trexDefaults(reader, moov, id))
 
+# Where a recording says it was made. A phone writes it and a catalogue wants
+# it, and it is the one thing outside the track tables worth reading here.
+
+func parseIso6709*(text: string): tuple[latitude, longitude: float; found: bool] =
+  ## `+45.9374+006.6387+542.091/` — signed latitude, signed longitude, and
+  ## often an altitude, each introduced by its own sign.
+  ##
+  ## Split on the signs rather than by fixed widths: the standard allows
+  ## several precisions and a phone does not always use the same one. A string
+  ## with fewer than two numbers carries no position, which is not an error —
+  ## most files have none at all.
+  var numbers: seq[float]
+  var at = 0
+  while at < text.len and numbers.len < 3:
+    if text[at] notin {'+', '-'}:
+      inc at
+      continue
+    var stop = at + 1
+    while stop < text.len and (text[stop].isDigit or text[stop] == '.'):
+      inc stop
+    if stop == at + 1: break
+    try: numbers.add parseFloat(text[at ..< stop])
+    except ValueError: break
+    at = stop
+  if numbers.len < 2: return
+  if numbers[0] < -90.0 or numbers[0] > 90.0: return
+  if numbers[1] < -180.0 or numbers[1] > 180.0: return
+  (numbers[0], numbers[1], true)
+
+proc appleMetadataValue(reader: Reader; meta: tuple[body, bodyEnd: int];
+                        wanted: string): string =
+  ## One value out of QuickTime's `keys`/`ilst` pair.
+  ##
+  ## `keys` names the fields in order and `ilst` holds the values indexed by
+  ## that order, one-based — so neither half means anything without the other,
+  ## and a file with `ilst` alone is read as having nothing rather than
+  ## guessed at.
+  let keys = findBox(reader.bytes, meta.body, meta.bodyEnd, ["keys"])
+  let ilst = findBox(reader.bytes, meta.body, meta.bodyEnd, ["ilst"])
+  if keys.body < 0 or ilst.body < 0: return ""
+  if keys.body + 8 > keys.bodyEnd: return ""
+
+  var index = 0
+  var at = keys.body + 8 # past the version, flags and entry count
+  var position = 0
+  while at + 8 <= keys.bodyEnd:
+    let size = int(reader.beU32(at))
+    if size < 8 or at + size > keys.bodyEnd: break
+    inc position
+    if reader.data[at + 8 ..< at + size] == wanted:
+      index = position
+      break
+    at += size
+  if index == 0: return ""
+
+  # An `ilst` item's own box kind is the key number, big-endian.
+  var seen = 0
+  for kind, body, bodyEnd in boxes(reader.bytes, ilst.body, ilst.bodyEnd):
+    inc seen
+    if seen != index: continue
+    let value = findBox(reader.bytes, body, bodyEnd, ["data"])
+    if value.body < 0 or value.body + 8 > value.bodyEnd: return ""
+    # A `data` box begins with a type and a locale, then the bytes.
+    return reader.data[value.body + 8 ..< value.bodyEnd]
+  ""
+
+proc location*(data: string): tuple[latitude, longitude: float; found: bool]
+    {.contractual.} =
+  ## Where the recording says it was made, or `found = false` when it does not
+  ## say. Most files do not, and that is not a failure.
+  ##
+  ## Two places carry it. A phone writes `com.apple.quicktime.location.ISO6709`
+  ## into the `keys`/`ilst` metadata; older cameras write the same string into
+  ## a `©xyz` atom under `udta`. Both are read, the newer one first.
+  ensure:
+    not result.found or (result.latitude >= -90.0 and result.latitude <= 90.0)
+  body:
+    let reader = Reader(data: data)
+    let moov = findBox(reader.bytes, 0, data.len, ["moov"])
+    if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
+
+    let meta = findBox(reader.bytes, moov.body, moov.bodyEnd, ["meta"])
+    if meta.body >= 0:
+      let text = appleMetadataValue(reader, meta,
+        "com.apple.quicktime.location.ISO6709")
+      if text.len > 0:
+        result = parseIso6709(text)
+        if result.found: return
+
+    let udta = findBox(reader.bytes, moov.body, moov.bodyEnd, ["udta"])
+    if udta.body >= 0:
+      for kind, body, bodyEnd in boxes(reader.bytes, udta.body, udta.bodyEnd):
+        # `\xA9xyz`: the copyright sign starts every QuickTime user atom.
+        if kind != "\xA9xyz": continue
+        # Two bytes of length and two of language precede the string.
+        if body + 4 > bodyEnd: continue
+        return parseIso6709(reader.data[body + 4 ..< bodyEnd])
+
 proc codedSample*(data: string; trackIndex, sampleIndex: int): string
     {.contractual.} =
   ## The coded bytes of one sample, exactly as the file holds them.
@@ -684,7 +782,7 @@ proc editList*(data: string; trackIndex: int): seq[Edit] {.contractual.} =
     raise newException(MovieError, "mp4: track index past the file")
 
 
-proc readMovieHeaderFile*(path: string): Movie {.contractual.} =
+proc readMovieHeaderBytes*(path: string): string {.contractual.} =
   ## `readMovie` over a file, reading only the boxes that describe it.
   ##
   ## `moov` holds everything a probe reports and `mdat` holds the media, so
@@ -699,7 +797,7 @@ proc readMovieHeaderFile*(path: string): Movie {.contractual.} =
   require:
     path.len > 0
   ensure:
-    result.tracks.len > 0
+    result.len > 0
   body:
     var handle: File
     if not handle.open(path):
@@ -744,8 +842,31 @@ proc readMovieHeaderFile*(path: string): Movie {.contractual.} =
         handle.setFilePos(at)
         if handle.readBuffer(addr buffer[0], int(boxSize)) != int(boxSize):
           raise newException(MovieError, "mp4: moov box is truncated")
-        return readMovie(brand & buffer)
+        return brand & buffer
       at += boxSize
     raise newException(MovieError, "mp4: no moov box")
+
+
+
+
+proc readMovieHeaderFile*(path: string): Movie {.contractual.} =
+  ## `readMovie` over a file, reading only the boxes that describe it.
+  ##
+  ## The buffer `readMovieHeaderBytes` gathers is `ftyp` and `moov` and nothing
+  ## else, so a recording of any length costs its header rather than its media.
+  require:
+    path.len > 0
+  ensure:
+    result.tracks.len > 0
+  body:
+    readMovie(readMovieHeaderBytes(path))
+
+proc locationFile*(path: string): tuple[latitude, longitude: float;
+    found: bool] {.contractual.} =
+  ## `location` over a file, reading the boxes rather than the media.
+  require:
+    path.len > 0
+  body:
+    location(readMovieHeaderBytes(path))
 
 
