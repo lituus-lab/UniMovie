@@ -90,6 +90,27 @@ suite "matroska and webm":
     expect MovieError:
       discard readMatroska("\x1A\x45\xDF\xA4 not really ebml")
 
+proc le32(value: uint32): string =
+  ## Four little-endian bytes, which is how every AVI field is written.
+  for index in 0 .. 3: result.add char((value shr (8 * index)) and 0xFF)
+
+proc chunk(id, payload: string): string =
+  ## A RIFF chunk: the four-character id, the payload length, the payload.
+  ## Odd-length payloads are padded, as the format requires.
+  result = id & le32(uint32(payload.len)) & payload
+  if payload.len mod 2 == 1: result.add '\0'
+
+proc riffWith(body: string): string =
+  ## A RIFF file whose form is `AVI ` and whose content is `body`.
+  chunk("RIFF", "AVI " & body)
+
+proc strh(kind: string; scale, rate, length: uint32): string =
+  ## A `strh` header: the stream kind, then the rate fields at the offsets
+  ## the reader takes them from. Forty bytes, which is its minimum.
+  result = kind & "FMP4" & le32(0) & le32(0) & le32(0)
+  result.add le32(scale) & le32(rate) & le32(0) & le32(length)
+  while result.len < 40: result.add '\0'
+
 suite "avi":
   test "the stream reports the four-character code the file names":
     let movie = readMovieFile(Fixtures / "tiny.avi")
@@ -107,6 +128,64 @@ suite "avi":
   test "a RIFF that is not an AVI is refused":
     expect MovieError:
       discard readAvi("RIFF____WAVEfmt ")
+
+  test "a duration no int64 holds is refused rather than wrapped":
+    # Both factors are 32-bit header fields, so their product can pass what
+    # int64 holds. An unchecked build wraps it into a negative duration and
+    # says nothing — which is why this is a check in the reader and asserted
+    # here, rather than left to overflow checking that -d:release turns off.
+    var avih = le32(0xFFFFFFFF'u32) # microSecPerFrame
+    avih.add le32(0) & le32(0) & le32(0) # maxBytesPerSec, padding, flags
+    avih.add le32(0xFFFFFFFF'u32) # totalFrames
+    avih.add le32(0) & le32(0) & le32(0) # initialFrames, streams, bufferSize
+    avih.add le32(64) & le32(48) # width, height
+    expect MovieError:
+      discard readAvi(riffWith(chunk("LIST", "hdrl" & chunk("avih", avih))))
+
+  test "a media chunk named in upper case is still media":
+    # The two-character suffix says what a chunk holds. A muxer is free to
+    # write `DC`, and a reader that knew only `dc` would report a file with
+    # no frames in it at all.
+    let hdrl = chunk("LIST", "hdrl" &
+      chunk("avih", le32(1000) & le32(0) & le32(0) & le32(0) & le32(1) &
+                    le32(0) & le32(0) & le32(0) & le32(64) & le32(48)) &
+      chunk("LIST", "strl" & chunk("strh", strh("vids", 1, 25, 1))))
+    let upper = riffWith(hdrl & chunk("LIST", "movi" & chunk("00DC", "abcd")))
+    let lower = riffWith(hdrl & chunk("LIST", "movi" & chunk("00dc", "abcd")))
+    check codedSampleCount(upper, 0) == 1
+    check codedSampleCount(upper, 0) == codedSampleCount(lower, 0)
+    check codedSample(upper, 0, 0) == "abcd"
+
+  test "a chunk is bounded by its parent, not by a fixed ceiling":
+    # What limits a chunk is the span its parent actually holds. A media
+    # list in a real recording runs past any round number, so a fixed cap
+    # would end the walk and report a file with no frames in it.
+    let hdrl = chunk("LIST", "hdrl" &
+      chunk("avih", le32(1000) & le32(0) & le32(0) & le32(0) & le32(1) &
+                    le32(0) & le32(0) & le32(0) & le32(64) & le32(48)) &
+      chunk("LIST", "strl" & chunk("strh", strh("vids", 1, 25, 1))))
+    let payload = "0123456789"
+    let fits = riffWith(hdrl & chunk("LIST", "movi" & chunk("00dc", payload)))
+    check codedSampleCount(fits, 0) == 1
+    check codedSample(fits, 0, 0) == payload
+    # The same chunk claiming one byte more than the list carries: refused,
+    # and the walk ends rather than reading past what it was handed.
+    let lying = fits.replace("00dc" & le32(uint32(payload.len)),
+                             "00dc" & le32(uint32(payload.len + 1)))
+    check codedSampleCount(lying, 0) == 0
+
+  test "a palette chunk is not returned as a frame, in either case":
+    # `pc` belongs to the stream without being a sample of it. Excluded by
+    # the same rule whichever case it is written in, since what the reader
+    # holds is a list of what media is rather than of what it is not.
+    let hdrl = chunk("LIST", "hdrl" &
+      chunk("avih", le32(1000) & le32(0) & le32(0) & le32(0) & le32(1) &
+                    le32(0) & le32(0) & le32(0) & le32(64) & le32(48)) &
+      chunk("LIST", "strl" & chunk("strh", strh("vids", 1, 25, 1))))
+    for suffix in ["pc", "PC"]:
+      let file = riffWith(hdrl &
+        chunk("LIST", "movi" & chunk("00" & suffix, "abcd")))
+      check codedSampleCount(file, 0) == 0
 
 suite "malformed input is reported, not fatal":
   test "every prefix of every fixture":
@@ -192,3 +271,32 @@ suite "unknown is not empty":
       let movie = readMovieFile(Fixtures / name)
       check movie.tracks[0].sampleCount == 0
       check movie.durationSeconds > 0.5
+
+suite "the paths the other suites do not reach":
+  test "an AVI with sound reports its audio stream":
+    # Every other AVI fixture is video only, so the `WAVEFORMATEX` branch went
+    # unexercised. A format tag is a number rather than a four-character code,
+    # so it is rendered as four hex digits rather than invented into a name:
+    # 0001 is uncompressed PCM.
+    let data = readFile(Fixtures / "sound.avi")
+    let movie = readMovie(data)
+    check movie.tracks.len == 2
+    check movie.videoTrack == 0
+    let audio = movie.audioTrack
+    check audio == 1
+    check movie.tracks[audio].kind == tkAudio
+    check movie.tracks[audio].codec == "0001"
+    check movie.tracks[audio].sampleCount > 0
+    check codedSampleCount(data, audio) > 0
+
+  test "sniffing a file that cannot be opened raises IOError":
+    expect IOError:
+      discard sniffFile(getTempDir() / "unimovie-there-is-no-such-file.mp4")
+
+  test "an empty file is not any container":
+    let target = getTempDir() /
+      ("unimovie-empty-" & $getCurrentProcessId() & ".mp4")
+    defer: removeFile(target)
+    writeFile(target, "")
+    check sniffFile(target) == cUnknown
+    expect MovieError: discard readMovieFile(target)
