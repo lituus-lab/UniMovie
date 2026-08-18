@@ -15,8 +15,9 @@ import UniMovie/matroska
 import UniMovie/avi
 import UniMovie/mpegts
 import UniMovie/ogg
+import UniMovie/mux
 import UniMovie/probe
-export types, matroska, avi, mpegts, ogg, probe
+export types, matroska, avi, mpegts, ogg, probe, mux
 export isobmff except readMovie, readMovieFile
 
 const UniMovieVersion* = "0.1.0"

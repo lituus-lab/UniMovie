@@ -18,6 +18,7 @@ src/UniMovie/matroska.nim   Matroska and WebM
 src/UniMovie/avi.nim        AVI
 src/UniMovie/mpegts.nim     MPEG-TS, M2TS, MTS
 src/UniMovie/ogg.nim        Ogg
+src/UniMovie/mux.nim        writing MP4 around samples already coded
 src/UniMovie/probe.nim      one entry point over every container
 src/UniMovie/c_api.nim      C ABI
 include/UniMovie.h          hand-written C header

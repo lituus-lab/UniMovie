@@ -80,7 +80,9 @@ own history rather than by hand.
 
 ## Scope
 
-Demultiplexing for video containers, and nothing else. No decoder and no system
+Demultiplexing for video containers, and muxing them back — nothing else.
+The writer assembles boxes around samples the caller already encoded and never
+produces one, which is the same boundary the reader keeps. No decoder and no system
 API: a track reports the code its samples are in, and producing pixels belongs
 to a backend the application registers. Which codecs may be decoded at all is
 ADR-0002's subject.

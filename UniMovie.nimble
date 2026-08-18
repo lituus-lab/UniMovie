@@ -36,18 +36,22 @@ task docs, "API reference + book into pages/ — what CI publishes":
 task test, "Nim tests (debug, contracts active)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
   exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
+  exec "nim c -r --path:src -o:build/test_mux tests/test_mux.nim"
 
 task testRelease, "Nim tests (release, contracts compiled away)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
   exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_mux_rel tests/test_mux.nim"
 
 task testCi, "Nim tests (CI subset, debug)":
   exec "nim c -r --path:src -o:build/test_isobmff tests/test_isobmff.nim"
   exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
+  exec "nim c -r --path:src -o:build/test_mux tests/test_mux.nim"
 
 task testCiRelease, "Nim tests (CI subset, release)":
   exec "nim c -r -d:release --path:src -o:build/test_isobmff_rel tests/test_isobmff.nim"
   exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_mux_rel tests/test_mux.nim"
 
 task testAll, "debug + release + C ABI":
   exec "nimble test"
@@ -131,7 +135,7 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   rmDir "coverage"
   rmFile "lcov.info"
   var traces: seq[string]
-  for suite in ["isobmff", "probe"]:
+  for suite in ["isobmff", "probe", "mux"]:
     let cache = "build/covcache_" & suite
     rmDir cache
     exec "nim c --path:src --nimcache:" & cache &

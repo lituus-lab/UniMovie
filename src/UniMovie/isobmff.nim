@@ -347,6 +347,76 @@ proc codedSample*(data: string; trackIndex, sampleIndex: int): string
       return data[at ..< at + table.sizes[sampleIndex]]
     raise newException(MovieError, "mp4: track index past the file")
 
+proc sampleTiming*(data: string; trackIndex: int):
+    seq[tuple[duration, compositionOffset: int]] {.contractual.} =
+  ## Per-sample decode duration and composition offset, in the track's own
+  ## timescale.
+  ##
+  ## Read on demand rather than carried on `Track`, because `readMovie` costs
+  ## the size of `moov` and this costs one entry per sample — an hour of video
+  ## is a hundred thousand of them, which a caller asking only for a file's
+  ## shape should not pay for.
+  ##
+  ## The composition offset is how far a sample's display time sits from its
+  ## decode time. It is non-zero only where the encoder reordered, and a file
+  ## with no `ctts` box reports every offset as 0 — which is what "not
+  ## reordered" means, so there is no unknown case here.
+  ##
+  ## Anything that rewrites a track needs both: writing samples back in decode
+  ## order without their offsets puts a reordered stream out of sequence.
+  require:
+    trackIndex >= 0
+  body:
+    let reader = Reader(data: data)
+    let moov = findBox(reader.bytes, 0, data.len, ["moov"])
+    if moov.body < 0: raise newException(MovieError, "mp4: no moov box")
+    var seen = 0
+    for kind, body, bodyEnd in boxes(reader.bytes, moov.body, moov.bodyEnd):
+      if kind != "trak": continue
+      if seen != trackIndex:
+        inc seen
+        continue
+      let stbl = findBox(reader.bytes, body, bodyEnd,
+        ["mdia", "minf", "stbl"])
+      if stbl.body < 0: raise newException(MovieError, "mp4: track has no stbl")
+
+      let stts = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["stts"])
+      if stts.body >= 0 and stts.body + 8 <= stts.bodyEnd:
+        let count = int(reader.beU32(stts.body + 4))
+        if count < 0 or count > MaxSamples:
+          raise newException(MovieError, "mp4: implausible stts count")
+        if stts.body + 8 + count * 8 > stts.bodyEnd:
+          raise newException(MovieError, "mp4: stts is truncated")
+        for index in 0 ..< count:
+          let run = int(reader.beU32(stts.body + 8 + index * 8))
+          let delta = int(reader.beU32(stts.body + 8 + index * 8 + 4))
+          if run < 0 or result.len + run > MaxSamples:
+            raise newException(MovieError, "mp4: stts describes too many samples")
+          for _ in 0 ..< run: result.add (delta, 0)
+
+      let ctts = findBox(reader.bytes, stbl.body, stbl.bodyEnd, ["ctts"])
+      if ctts.body >= 0 and ctts.body + 8 <= ctts.bodyEnd:
+        # Version 1 stores the offset signed, which is how a stream whose first
+        # frame displays before it decodes expresses itself.
+        let signed = int(uint8(data[ctts.body])) == 1
+        let count = int(reader.beU32(ctts.body + 4))
+        if count < 0 or count > MaxSamples:
+          raise newException(MovieError, "mp4: implausible ctts count")
+        if ctts.body + 8 + count * 8 > ctts.bodyEnd:
+          raise newException(MovieError, "mp4: ctts is truncated")
+        var at = 0
+        for index in 0 ..< count:
+          let run = int(reader.beU32(ctts.body + 8 + index * 8))
+          let raw = reader.beU32(ctts.body + 8 + index * 8 + 4)
+          let offset = if signed: int(cast[int32](uint32(raw and 0xFFFF_FFFF)))
+                       else: int(raw)
+          for _ in 0 ..< run:
+            if at >= result.len: break
+            result[at].compositionOffset = offset
+            inc at
+      return
+    raise newException(MovieError, "mp4: track index past the file")
+
 proc readMovieFile*(path: string): Movie {.contractual.} =
   ## `readMovie` over a file, read whole: `moov` may sit after `mdat`, so the
   ## tables cannot be found from a forward-only stream. A path that cannot be
