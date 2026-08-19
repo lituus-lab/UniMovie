@@ -17,6 +17,7 @@
 import contracts
 import std/[options, strutils, times]
 import UniImage/isobmff
+from ./isobmff import readMovieHeaderBytes
 
 const Epoch1904* = 2_082_844_800'i64
   ## Seconds from 1904-01-01 to 1970-01-01, both UTC. An ISO base media
@@ -169,7 +170,12 @@ proc movieCreationDate*(path: string): tuple[moment: DateTime; found: bool] =
   ##
   ## `found` is false where the file leaves it unset, which is a real state and
   ## not a failure: a muxer with no date to write puts zero there.
-  let data = readFile(path)
+  ##
+  ## Only the header boxes are read. A date sits in `mvhd`, a few hundred bytes
+  ## in; reading the whole file for it costs the recording's entire length, and
+  ## a catalogue scan asks this of every video it meets.
+  let data = try: readMovieHeaderBytes(path)
+             except CatchableError: return
   let moov = findBox(data.toOpenArrayByte(0, data.high), 0, data.len, ["moov"])
   if moov.body < 0: return
   let mvhd = findBox(data.toOpenArrayByte(0, data.high), moov.body,
