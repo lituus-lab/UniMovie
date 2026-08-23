@@ -20,7 +20,7 @@ Commits without a `Signed-off-by` trailer are not accepted.
 
 Commit subjects and the PR title follow [Conventional Commits 1.0](https://www.conventionalcommits.org/):
 
-```
+```text
 <type>(scope)!: <description>
 ```
 
@@ -28,7 +28,7 @@ Commit subjects and the PR title follow [Conventional Commits 1.0](https://www.c
 `build`, `ci`, `chore`, `revert`, `bump`. `scope` and `!` (breaking change) are
 optional. A space separates the colon from the description.
 
-```
+```text
 feat: add the keyframe index to the C ABI
 fix(c_api): refuse a negative track index instead of reading past
 docs: state what an empty keyframe list means

@@ -8,7 +8,7 @@
 
 ## Layout
 
-```
+```text
 UniMovie.nimble             package + tasks
 config.nims                 build config
 src/UniMovie.nim            umbrella, re-exports every public submodule
