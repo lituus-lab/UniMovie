@@ -6,8 +6,10 @@ on:
   push:
     tags: ['v*']
 
+# Read-only by default: only the release upload needs write, and it
+# declares it itself.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   guard:
@@ -149,6 +151,9 @@ jobs:
     name: Publish GitHub Release
     needs: [test, cabi, wheels]
     runs-on: ubuntu-latest
+    permissions:
+      # softprops/action-gh-release creates the release and uploads assets.
+      contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:

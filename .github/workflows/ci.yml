@@ -92,6 +92,8 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make --no-progress -y
       - run: nimble ctest
+      # The C demo is part of the documented surface; nothing else builds it.
+      - run: nimble cexample
       # nimble ctest only builds the static lib (clibStatic); the shared lib
       # this job uploads below needs its own explicit build step.
       - run: nimble clib
@@ -152,6 +154,9 @@ jobs:
           delocate-wheel py/dist/*.whl -w py/dist/repaired/
       - name: Repair Wheel (Windows)
         if: matrix.os == 'windows-latest'
+        # bash, not the default PowerShell: pwsh does not expand
+        # py/dist/*.whl, so delvewheel would receive the pattern itself.
+        shell: bash
         run: |
           pip install delvewheel
           delvewheel repair py/dist/*.whl -w py/dist/repaired/
@@ -188,8 +193,13 @@ jobs:
           test -f artifact/libUniMovie.a
           CC=cc; BIN=consumer
           if [ "$RUNNER_OS" = Windows ]; then CC=gcc; BIN=consumer.exe; fi
+          # -lm after the archive, as tests/c/Makefile does: the static lib
+          # leaves libm calls unresolved for the final link, and ld only scans
+          # a library for symbols already pending.
           "$CC" -Iartifact/include -O2 -Wall -Wextra -std=c11 -o "$BIN" \
-            tests/c/test_unimovie.c artifact/libUniMovie.a
+            tests/c/test_unimovie.c artifact/libUniMovie.a -lm
+          # Run from the repository root, where tests/fixtures sits: the test
+          # looks for it and skips what needs it when it is not there.
           "./$BIN"
 
   consume-wheel:
@@ -310,10 +320,11 @@ jobs:
     name: Bench (smoke)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
       - uses: jiro4989/setup-nim-action@v2
         with:
-          nim-version: "2.2.x"
+          nim-version: '2.2.10'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: nimble install -y
