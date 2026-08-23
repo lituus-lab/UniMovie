@@ -134,15 +134,16 @@ matrix; anything migrating off `ffprobe` has to negate.
 
 ## The Uni* family
 
-UniMovie is a leaf of `lituus-lab`'s `Uni*` family: a set of Nim libraries,
-each with a C ABI and a Python binding, unified by a shared dependency graph and
-documentation and testing conventions. See
+UniMovie sits in the middle of `lituus-lab`'s `Uni*` family: a set of Nim
+libraries, each with a C ABI and a Python binding, unified by a shared
+dependency graph and documentation and testing conventions. See
 [lituus-lab/.github](https://github.com/lituus-lab/.github) for the family's
 purpose and philosophy. It depends on `UniImage` alone, for the ISOBMFF box
 reader: HEIF and MP4 are the same box structure, and the family reads it in one
 place rather than two. Nothing else — demultiplexing is byte handling, and a
 consumer cataloguing a media library should not link a numeric stack to read a
-header.
+header. Above it, `UniAudio` muxes ALAC through this library and `UniMedia`
+reads a recording's shape through it.
 
 ## Provenance & development
 
@@ -167,7 +168,7 @@ retyped by hand.
 
 ## Layout
 
-```
+```text
 src/UniMovie.nim            umbrella module
 src/UniMovie/types.nim      what a demuxer reports, and the ceilings
 src/UniMovie/isobmff.nim    MP4/MOV boxes, tracks, sample tables, keyframes

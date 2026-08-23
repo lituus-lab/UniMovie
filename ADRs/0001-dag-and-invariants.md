@@ -29,7 +29,7 @@ rule and the internal one below.
 
 `vgraph.cfg` declares them, lowest first:
 
-```
+```text
 types < isobmff < matroska < avi < mpegts < ogg < probe < c_api
 ```
 
