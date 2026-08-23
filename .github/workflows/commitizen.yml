@@ -6,6 +6,10 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
+# The action only reads the pull request title.
+permissions:
+  pull-requests: read
+
 jobs:
   commitizen:
     name: Conventional commits
