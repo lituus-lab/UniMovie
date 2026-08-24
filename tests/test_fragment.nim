@@ -8,7 +8,7 @@
 ## same samples, in the same order, at the same times. Decoding to pixels and
 ## comparing with the source proves all three at once.
 import std/[unittest, os, osproc, strutils]
-import UniImage/isobmff as boxlayer
+import UniContainer/isobmff as boxlayer
 import UniMovie
 
 const Fixtures = currentSourcePath.parentDir / "fixtures"
@@ -43,6 +43,8 @@ proc configOf(data: string; trackIndex: int; want: string): string =
     return
 
 proc paramsOf(source: string; movie: Movie): seq[TrackParams] =
+  ## Writer parameters describing the tracks of an already-read movie, so a
+  ## remux reproduces the source rather than a set of defaults invented here.
   for index, track in movie.tracks:
     let want = if track.kind == tkVideo: "avcC" else: "esds"
     result.add TrackParams(kind: track.kind, codec: track.codec,
@@ -51,6 +53,7 @@ proc paramsOf(source: string; movie: Movie): seq[TrackParams] =
       config: configOf(source, index, want), edits: editList(source, index))
 
 proc bytesOf(data: string; track, index: int): seq[byte] =
+  ## One coded sample as bytes, ready to hand to a writer.
   let sample = codedSample(data, track, index)
   result = newSeq[byte](sample.len)
   for position in 0 ..< sample.len: result[position] = byte(sample[position])
@@ -62,12 +65,17 @@ proc decodeToRaw(path, target: string): bool =
             " -f rawvideo -pix_fmt rgb24 " & target.quoteShell).exitCode == 0
 
 proc hasBox(data, kind: string): bool =
+  ## Whether a box of that kind sits at the top level. Top level only: a
+  ## nested one of the same kind is a different claim, and one test here
+  ## depends on telling the two apart.
   var bytes: seq[byte]
   for character in data: bytes.add byte(character)
   for outer, _, _ in boxlayer.boxes(bytes, 0, bytes.len):
     if outer == kind: return true
 
 proc topLevelBoxes(data: string): seq[string] =
+  ## The kinds of the top-level boxes, in file order — which is what says
+  ## whether an initialisation segment precedes the fragments.
   var bytes: seq[byte]
   for character in data: bytes.add byte(character)
   for kind, _, _ in boxlayer.boxes(bytes, 0, bytes.len): result.add kind
@@ -98,8 +106,12 @@ suite "a fragmented file is written in the order the format asks for":
     check "moof" in boxes
     check boxes.find("moov") < boxes.find("moof")
     # `mvex` is what says the empty tables in `moov` mean "fragments follow"
-    # rather than "this movie has nothing in it".
-    check hasBox(readFile(target), "moof")
+    # rather than "this movie has nothing in it". It nests inside `moov`, so
+    # it is reached by path — `hasBox` looks at the top level and would never
+    # find it, which is how this check came to repeat the one above it.
+    var bytes: seq[byte]
+    for character in readFile(target): bytes.add byte(character)
+    check boxlayer.findBox(bytes, 0, bytes.len, ["moov", "mvex"]).body >= 0
 
   test "one flush per keyframe gives one fragment per keyframe":
     var writer = newFragmentedMp4Writer(target, paramsOf(source, movie))

@@ -15,8 +15,8 @@
 ## places that matter, and a reader that assumes otherwise is off by 66 years.
 
 import contracts
-import std/[options, strutils, times]
-import UniImage/isobmff
+import std/[options, os, strutils, times]
+import UniContainer/isobmff
 from ./isobmff import readMovieHeaderBytes
 
 const Epoch1904* = 2_082_844_800'i64
@@ -42,20 +42,29 @@ proc fromQuickTime*(stamp: int64): DateTime =
   fromUnix(stamp - Epoch1904).utc()
 
 func beU32At(data: string; offset: int): int64 =
+  ## Four big-endian bytes at `offset`. The caller has already bounded the
+  ## span it hands in: this indexes without checking, because every use here
+  ## follows a box header whose length was validated.
   (int64(uint8(data[offset])) shl 24) or
     (int64(uint8(data[offset + 1])) shl 16) or
     (int64(uint8(data[offset + 2])) shl 8) or int64(uint8(data[offset + 3]))
 
 func beU64At(data: string; offset: int): int64 =
+  ## Eight big-endian bytes at `offset`, for a version-1 header. Bounded by
+  ## the caller, as `beU32At` is.
   result = 0
   for index in 0 ..< 8:
     result = (result shl 8) or int64(uint8(data[offset + index]))
 
 proc putBE32(data: var string; offset: int; value: int64) =
+  ## Write `value` as four big-endian bytes at `offset`, in place. The four
+  ## bytes must already exist: this overwrites, it never grows the string.
   for index in 0 ..< 4:
     data[offset + index] = char(uint8((value shr ((3 - index) * 8)) and 0xFF))
 
 proc putBE64(data: var string; offset: int; value: int64) =
+  ## Write `value` as eight big-endian bytes at `offset`, in place. Same
+  ## requirement as `putBE32`: the room is the caller's to have made.
   for index in 0 ..< 8:
     data[offset + index] = char(uint8((value shr ((7 - index) * 8)) and 0xFF))
 
@@ -76,6 +85,11 @@ func creationField(data: string; body, bodyEnd: int): Option[HeaderSpan] =
   some(HeaderSpan(at: body + 4, wide: wide))
 
 func readCreation(data: string; span: HeaderSpan): int64 =
+  ## The creation time a header carries, in seconds since the QuickTime epoch.
+  ##
+  ## The field is four bytes in a version-0 header and eight in a version-1
+  ## one, which is what `span.wide` records — reading the wrong width would
+  ## take half a timestamp and half the field after it.
   if span.wide: data.beU64At(span.at) else: data.beU32At(span.at)
 
 const DateMarkers = ["\xA9day", "com.apple.quicktime.creationdate"]
@@ -130,8 +144,14 @@ proc setMovieCreationDate*(inPath, outPath: string;
   ## The modification time is left alone: it records when the file was last
   ## written, which is not what a wrong camera clock got wrong.
   ##
-  ## The file is rebuilt in memory and written once, so `outPath` may equal
-  ## `inPath` and a failure part-way leaves the original as it was.
+  ## The file is rebuilt in memory and written to a temporary beside the
+  ## target, which is then renamed over it. So `outPath` may equal `inPath`,
+  ## and a failure at any point — including part-way through the write —
+  ## leaves the original as it was rather than truncated.
+  ##
+  ## Rebuilt in memory means the whole file is held at once. That is the cost
+  ## of being able to write back over the input; a caller editing a recording
+  ## rather than a clip should know it is paying it.
   require:
     inPath.len > 0
     outPath.len > 0
@@ -162,7 +182,15 @@ proc setMovieCreationDate*(inPath, outPath: string;
     for span in spans:
       if span.wide: data.putBE64(span.at, stamp)
       else: data.putBE32(span.at, stamp)
-    writeFile(outPath, data)
+    # Beside the target, not in the system temp directory: a rename is atomic
+    # only within one filesystem, and those two are often not the same one.
+    let scratch = outPath & ".unimovie-" & $getCurrentProcessId() & ".tmp"
+    try:
+      writeFile(scratch, data)
+      moveFile(scratch, outPath)
+    except CatchableError:
+      removeFile(scratch)
+      raise
     spans.len
 
 proc movieCreationDate*(path: string): tuple[moment: DateTime; found: bool] =
@@ -187,4 +215,5 @@ proc movieCreationDate*(path: string): tuple[moment: DateTime; found: bool] =
   let stamp = readCreation(data, span.get())
   if stamp <= 0: return
   (fromQuickTime(stamp), true)
+
 

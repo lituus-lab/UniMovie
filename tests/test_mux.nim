@@ -7,7 +7,7 @@
 ## Identical pixels mean the sample framing, the timing tables and the codec
 ## configuration all survived — none of which a structural check alone proves.
 import std/[unittest, os, osproc, strutils]
-import UniImage/isobmff as boxlayer
+import UniContainer/isobmff as boxlayer
 import UniMovie
 
 const Fixtures = currentSourcePath.parentDir / "fixtures"
@@ -36,6 +36,7 @@ proc decodeToRaw(path, target: string): bool =
             " -f rawvideo -pix_fmt rgb24 " & target.quoteShell).exitCode == 0
 
 proc sampleBytes(data: string; track, index: int): seq[byte] =
+  ## One coded sample as bytes, ready to hand to a writer.
   let sample = codedSample(data, track, index)
   result = newSeq[byte](sample.len)
   for position in 0 ..< sample.len: result[position] = byte(sample[position])
@@ -47,7 +48,7 @@ suite "a written file reads back":
     let index = movie.videoTrack
     let track = movie.tracks[index]
     let timing = sampleTiming(source, index)
-    let target = getTempDir() / "unimovie-mux-basic.mp4"
+    let target = getTempDir() / ("unimovie-mux-basic-" & $getCurrentProcessId() & ".mp4")
     defer: removeFile(target)
 
     var writer = newMp4Writer(target, [TrackParams(kind: tkVideo,
@@ -76,7 +77,7 @@ suite "a written file reads back":
     let movie = readMovie(source)
     let index = movie.videoTrack
     let timing = sampleTiming(source, index)
-    let target = getTempDir() / "unimovie-mux-bytes.mp4"
+    let target = getTempDir() / ("unimovie-mux-bytes-" & $getCurrentProcessId() & ".mp4")
     defer: removeFile(target)
 
     var writer = newMp4Writer(target, [TrackParams(kind: tkVideo,
@@ -106,9 +107,10 @@ suite "a remuxed file decodes to the same pixels":
       let index = movie.videoTrack
       let track = movie.tracks[index]
       let timing = sampleTiming(source, index)
-      let target = getTempDir() / "unimovie-mux-remux.mp4"
-      let mine = getTempDir() / "unimovie-mux-mine.raw"
-      let theirs = getTempDir() / "unimovie-mux-theirs.raw"
+      let target = getTempDir() / ("unimovie-mux-remux-" & $getCurrentProcessId() & ".mp4")
+      let mine = getTempDir() / ("unimovie-mux-mine-" & $getCurrentProcessId() & ".raw")
+      let theirs = getTempDir() / ("unimovie-mux-theirs-" &
+          $getCurrentProcessId() & ".raw")
       defer:
         removeFile(target)
         removeFile(mine)
@@ -151,10 +153,14 @@ suite "the writer refuses what it cannot write":
         [TrackParams(kind: tkOther, codec: "text", timescale: 1000)])
 
   test "a codec code that is not four characters":
-    expect MovieError:
-      discard newMp4Writer(getTempDir() / "unimovie-bad.mp4",
-        [TrackParams(kind: tkVideo, codec: "h264", timescale: 1000,
-                     width: 0, height: 0)])
+    # Real dimensions, and a codec that is genuinely the wrong length. With
+    # zero dimensions the writer refuses on those instead and the codec rule
+    # is never reached — the test passed without ever testing it.
+    for wrong in ["h26", "avc12"]:
+      expect MovieError:
+        discard newMp4Writer(getTempDir() / "unimovie-bad.mp4",
+          [TrackParams(kind: tkVideo, codec: wrong, timescale: 1000,
+                       width: 64, height: 48)])
 
   test "a video track with no dimensions":
     expect MovieError:
@@ -162,7 +168,7 @@ suite "the writer refuses what it cannot write":
         [TrackParams(kind: tkVideo, codec: "avc1", timescale: 1000)])
 
   test "a sample for a track that does not exist":
-    let target = getTempDir() / "unimovie-bad-track.mp4"
+    let target = getTempDir() / ("unimovie-bad-track-" & $getCurrentProcessId() & ".mp4")
     var writer = newMp4Writer(target, [TrackParams(kind: tkAudio,
       codec: "mp4a", timescale: 44100, channels: 2, sampleRate: 44100)])
     defer: removeFile(target)
@@ -174,7 +180,7 @@ suite "the writer refuses what it cannot write":
     writer.close()
 
   test "closing with nothing written":
-    let target = getTempDir() / "unimovie-empty.mp4"
+    let target = getTempDir() / ("unimovie-empty-" & $getCurrentProcessId() & ".mp4")
     var writer = newMp4Writer(target, [TrackParams(kind: tkAudio,
       codec: "mp4a", timescale: 44100, channels: 2, sampleRate: 44100)])
     defer: removeFile(target)

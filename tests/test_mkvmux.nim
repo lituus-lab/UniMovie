@@ -9,7 +9,7 @@
 ## wrong order. Only decoded pixels catch that, which is why every conversion
 ## below ends in a comparison of them.
 import std/[unittest, os, osproc, strutils]
-import UniImage/isobmff as boxlayer
+import UniContainer/isobmff as boxlayer
 import UniMovie
 
 const Fixtures = currentSourcePath.parentDir / "fixtures"
@@ -62,6 +62,7 @@ proc audioSpecificConfig(esds: string): string =
     inc index
 
 proc bytesOf(data: string; track, index: int): seq[byte] =
+  ## One coded sample as bytes, ready to hand to a writer.
   let sample = codedSample(data, track, index)
   result = newSeq[byte](sample.len)
   for position in 0 ..< sample.len: result[position] = byte(sample[position])
@@ -72,6 +73,10 @@ proc decodeToRaw(path, target: string): bool =
             " -f rawvideo -pix_fmt rgb24 " & target.quoteShell).exitCode == 0
 
 proc paramsOf(source: string; movie: Movie): seq[TrackParams] =
+  ## Writer parameters describing the tracks of an already-read movie.
+  ##
+  ## Matroska wants the bare AudioSpecificConfig where MP4 carries a whole
+  ## `esds` descriptor, so the audio configuration is unwrapped on the way.
   for index, track in movie.tracks:
     var params = TrackParams(kind: track.kind, codec: track.codec,
       timescale: track.timescale, width: track.width, height: track.height,

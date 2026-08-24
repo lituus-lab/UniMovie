@@ -14,16 +14,13 @@
 ## Every offset, count and length comes from a table an arbitrary file controls,
 ## so each is checked against the file's real length before it is used.
 ##
-## The box walk itself — `boxes` and `findBox` — comes from `UniImage`, which
-## reads the same structure for HEIF and for the Exif item inside an MP4. One
-## box reader in the family, not two.
-##
-## The box module is imported rather than the umbrella: `import UniImage` would
-## pull every image codec into a demuxer that decodes nothing.
+## The box walk itself — `boxes` and `findBox` — comes from `UniContainer`,
+## which owns container framing for the family: MP4, MOV, HEIF and an ALAC
+## `.m4a` are the same structure, so one box reader serves all of them.
 
 import contracts
 import std/strutils
-import UniImage/isobmff
+import UniContainer/isobmff
 import ./types
 
 type Reader = object
@@ -33,7 +30,7 @@ type Reader = object
   data: string
 
 template bytes(reader: Reader): untyped =
-  ## The file as the bytes `UniImage`'s box walk takes. A template rather than a
+  ## The file as the bytes `UniContainer`'s box walk takes. A template rather than a
   ## proc: `toOpenArrayByte` cannot be returned, only passed on.
   reader.data.toOpenArrayByte(0, reader.data.high)
 
