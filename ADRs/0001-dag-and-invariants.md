@@ -8,12 +8,16 @@
 
 ## Decision
 
-UniMovie depends on `UniImage`, and on nothing else in the family.
+UniMovie depends on `UniContainer`, and on nothing else in the family.
 
-The edge exists for one thing: the ISOBMFF box reader. HEIF is the same box
-structure as MP4, `UniImage` already walks it to find an Exif item, and a second
-walker here would be the same algorithm maintained twice — so `boxes` and
-`findBox` come from there.
+The edge exists for one thing: container framing. An MP4, a HEIF still and an
+ALAC `.m4a` are the same box structure, and how a box is shaped is not a video
+question — so `boxes` and `findBox` come from there, and so does the MP4 writer
+this library exposes.
+
+That framing was written here once, and in the image and audio libraries too,
+before it was given a home below all three. A walker maintained in three places
+is three chances to get a bounds check wrong.
 
 Nothing else is taken. Demultiplexing is byte handling and integer arithmetic,
 so there is nothing for a numeric or geometric layer to contribute, and an

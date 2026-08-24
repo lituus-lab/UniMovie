@@ -11,7 +11,9 @@ srcDir        = "src"
 requires "nim >= 2.0.0"
 requires "https://github.com/lbartoletti/NimContracts#main"
 # The ISOBMFF box layer, so the family has one box reader rather than two.
-requires "https://github.com/lituus-lab/UniImage#main"
+requires "https://github.com/lituus-lab/UniContainer#main"
+# Native float mathematics: the family takes its maths from one place.
+requires "https://github.com/lituus-lab/UniMath#main"
 
 task lint, "Fail if nimpretty would reformat a source":
   exec "nim c -r --hints:off -o:build/lint_tool tools/lint.nim"
@@ -58,6 +60,7 @@ task testCi, "Nim tests (CI subset, debug)":
   exec "nim c -r --path:src -o:build/test_probe tests/test_probe.nim"
   exec "nim c -r --path:src -o:build/test_mux tests/test_mux.nim"
   exec "nim c -r --path:src -o:build/test_samples tests/test_samples.nim"
+  exec "nim c -r --path:src -o:build/test_edit tests/test_edit.nim"
   exec "nim c -r --path:src -o:build/test_fragment tests/test_fragment.nim"
   exec "nim c -r --path:src -o:build/test_mkvmux tests/test_mkvmux.nim"
   exec "nim c -r --path:src -o:build/test_lacing tests/test_lacing.nim"
@@ -67,6 +70,7 @@ task testCiRelease, "Nim tests (CI subset, release)":
   exec "nim c -r -d:release --path:src -o:build/test_probe_rel tests/test_probe.nim"
   exec "nim c -r -d:release --path:src -o:build/test_mux_rel tests/test_mux.nim"
   exec "nim c -r -d:release --path:src -o:build/test_samples_rel tests/test_samples.nim"
+  exec "nim c -r -d:release --path:src -o:build/test_edit_rel tests/test_edit.nim"
   exec "nim c -r -d:release --path:src -o:build/test_fragment_rel tests/test_fragment.nim"
   exec "nim c -r -d:release --path:src -o:build/test_mkvmux_rel tests/test_mkvmux.nim"
   exec "nim c -r -d:release --path:src -o:build/test_lacing_rel tests/test_lacing.nim"
@@ -97,12 +101,12 @@ task clib, "C shared library":
        " src/UniMovie/c_api.nim"
 
 task clibStatic, "C static library":
-  exec "nim c --app:staticlib --noMain --mm:arc -d:release -o:" & staticLib &
+  exec "nim c --app:staticlib --noMain --mm:arc -d:release -d:staticNoAutoInit -o:" & staticLib &
        " src/UniMovie/c_api.nim"
 
 task clibMsvc, "C static library, MSVC ABI (Windows Python extension)":
   # CPython on Windows is MSVC-built and cannot link MinGW output.
-  exec "nim c --cc:vcc --app:staticlib --noMain --mm:arc -d:release" &
+  exec "nim c --cc:vcc --app:staticlib --noMain --mm:arc -d:release -d:staticNoAutoInit" &
        " -o:UniMovie.lib src/UniMovie/c_api.nim"
 
 # Nim's MinGW toolchain names it mingw32-make.
@@ -130,16 +134,21 @@ task pyLib, "Build the library the Python extension links against":
 task buildCython, "Cython extension in-place":
   exec "nimble pyLib"
   exec "nimble pyDeps"
-  exec "cd py && python3 setup.py build_ext --inplace"
+  # withDir, not `cd py && ...`: nimble's exec runs no shell on Windows, so
+  # the `cd` and the `&&` reach the process as part of the command itself.
+  withDir "py":
+    exec "python3 setup.py build_ext --inplace"
 
 task pyTest, "Cython extension + pytest":
   exec "nimble buildCython"
-  exec "cd py && python3 -m pytest -q"
+  withDir "py":
+    exec "python3 -m pytest -q"
 
 task pyWheel, "wheel":
   exec "nimble pyLib"
   exec "nimble pyDeps"
-  exec "cd py && python3 setup.py bdist_wheel"
+  withDir "py":
+    exec "python3 setup.py bdist_wheel"
 
 task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   # gcov and lcov driven directly, no coco. Linux and macOS only.
@@ -153,8 +162,8 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
   rmDir "coverage"
   rmFile "lcov.info"
   var traces: seq[string]
-  for suite in ["isobmff", "probe", "mux", "samples", "fragment", "mkvmux",
-                "lacing"]:
+  for suite in ["isobmff", "probe", "mux", "samples", "edit", "fragment",
+                "mkvmux", "lacing"]:
     let cache = "build/covcache_" & suite
     rmDir cache
     exec "nim c --path:src --nimcache:" & cache &

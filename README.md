@@ -31,7 +31,10 @@ trim starts playback partway in — which is what cancels the display offset a
 reordered stream begins with. A track given no edits writes no `edts` box, and
 that absence says the same thing as an edit that plays everything.
 `newMatroskaWriter` writes Matroska and WebM: an EBML header, a segment with
-Info and Tracks, a cluster per keyframe, and a Cues index. Two things do not
+Info and Tracks, clusters, and a Cues index. A cluster breaks on a video
+keyframe, and also once its span reaches thirty seconds — a block's timestamp
+is a signed 16-bit offset from its cluster's, so a cluster that ran on
+indefinitely could not express one. Two things do not
 carry across from an MP4 unchanged, and both are silent when they go wrong. A
 block's timestamp is when its frame is **shown**, where ISO base media stores
 when it is decoded — so a composition offset is added in rather than dropped,
@@ -69,8 +72,17 @@ anything consuming it carries or distributes a patented decoder. On macOS that
 backend is VideoToolbox, on Windows Media Foundation, elsewhere an `ffmpeg` the
 user installed.
 
-Codecs that are free of royalties — AV1, VP8/VP9, Theora, MPEG-2, Motion JPEG —
-may be decoded here without that reservation.
+That boundary does not move for a codec with no patent pool behind it. AV1,
+VP8/VP9 and Theora are licensed royalty-free by the bodies that published
+them, and the patents over MPEG-2 and baseline JPEG have expired — but this
+library still hands over their coded bytes rather than decoding them, so the
+backend the application registers is what turns any of them into pixels.
+
+What those two grounds are worth differs: a licence granted is not a term run
+out, and a term runs out by jurisdiction. Which profile is in use, which
+patents still read on it, what the backend's own licence says, and how the
+result is distributed are all the caller's to establish. None of this is
+legal advice.
 
 | Container | Limitations |
 |---|---|
@@ -138,11 +150,11 @@ UniMovie sits in the middle of `lituus-lab`'s `Uni*` family: a set of Nim
 libraries, each with a C ABI and a Python binding, unified by a shared
 dependency graph and documentation and testing conventions. See
 [lituus-lab/.github](https://github.com/lituus-lab/.github) for the family's
-purpose and philosophy. It depends on `UniImage` alone, for the ISOBMFF box
-reader: HEIF and MP4 are the same box structure, and the family reads it in one
-place rather than two. Nothing else — demultiplexing is byte handling, and a
-consumer cataloguing a media library should not link a numeric stack to read a
-header. Above it, `UniAudio` muxes ALAC through this library and `UniMedia`
+purpose and philosophy. It depends on `UniContainer` alone, for container
+framing: an MP4, a HEIF still and an ALAC `.m4a` are the same box structure,
+and the family reads and writes it in one place rather than three. Nothing else
+— demultiplexing is byte handling, and a consumer cataloguing a media library
+should not link a numeric stack to read a header. Above it, `UniAudio` muxes ALAC through this library and `UniMedia`
 reads a recording's shape through it.
 
 ## Provenance & development

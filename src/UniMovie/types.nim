@@ -8,6 +8,18 @@
 ## those numbers are stored, never what they mean.
 
 import contracts
+import UniContainer/mp4
+
+# The writer's own vocabulary lives in UniContainer, which is where writing a
+# container belongs. Re-exported so a caller of this library still names one
+# import for a track it is about to write.
+export TrackKind, Edit, TrackParams,
+  MaxWriterTracks, MaxDimension
+
+type MovieError* = ContainerError
+  ## A container this library cannot read, a truncated file, or a track whose
+  ## declared shape contradicts what the file holds. The same type the writer
+  ## raises, under the name this library has always used for it.
 
 const
   MaxTracks* = 1024
@@ -16,29 +28,8 @@ const
   MaxSamples* = 1 shl 24
     ## Sixteen million coded samples is many hours of video. A sample table
     ## claiming more is refused rather than allocated.
-  MaxWriterTracks* = 8
-    ## More than a muxer built for a camera or a renderer needs. A caller
-    ## asking for more is refused rather than allocated for. Here rather than
-    ## beside either writer, because both bound themselves by it and two copies
-    ## would be free to drift apart.
-  MaxDimension* = 1_000_000
-    ## Past any real frame. A header claiming more is refused rather than
-    ## believed, which is what stops a corrupt file from being reported as an
-    ## image a million pixels across.
 
 type
-  MovieError* = object of CatchableError
-    ## A container this library cannot read, a truncated file, or a track
-    ## whose declared shape contradicts what the file holds.
-
-  TrackKind* = enum
-    ## What a track carries. `tkOther` covers subtitles, timecode and data
-    ## tracks: they are reported so a caller sees the whole file, and skipped
-    ## by anything asking for pictures or sound.
-    tkVideo = "video"
-    tkAudio = "audio"
-    tkOther = "other"
-
   Rotation* = enum
     ## Clockwise display rotation, from the track's transformation matrix.
     ## Phones record sideways and correct it here rather than in the pixels, so
@@ -92,56 +83,6 @@ type
       ## other container it stays empty, because the index lives where this
       ## reader does not go: Matroska's Cues, AVI's per-chunk flags, a transport
       ## stream's random-access indicator.
-
-  Edit* = object
-    ## One entry of a track's edit list: which stretch of its media plays, and
-    ## for how long on the presentation clock.
-    ##
-    ## Two shapes cover almost every real use. An **empty edit** — `mediaTime`
-    ## of -1 — holds the track blank for `duration`, which is how a track that
-    ## starts late stays in sync with one that does not. A **trim** —
-    ## `mediaTime` of *n* — starts playback *n* units into the media, which is
-    ## how an encoder's own priming samples are kept out of what is heard.
-    ##
-    ## The media rate is always 1. A rate other than 1 asks a player to
-    ## resample, which is a decision about the content rather than about the
-    ## container, and leaving it out means no caller writes 0 by forgetting to
-    ## set it.
-    duration*: int64
-      ## How long this edit lasts, in the **movie** timescale — milliseconds.
-      ## Zero means the rest of the track: the whole media duration for a trim,
-      ## which a caller cannot compute before the last sample is written.
-    mediaTime*: int64
-      ## Where in the media this edit starts, in the **track's** timescale, or
-      ## -1 for an empty edit that plays nothing.
-
-  TrackParams* = object
-    ## What a track is, before any sample of it exists.
-    kind*: TrackKind
-    codec*: string
-      ## The four-character code the sample entry is named after — `avc1`,
-      ## `hvc1`, `av01`, `mp4a`, `alac`. It is what a reader reports and what a
-      ## decoder backend is registered under, so it must match the bytes.
-    timescale*: int
-      ## Units per second every timestamp of this track is counted in. A video
-      ## track usually takes the frame rate times a small factor so that a
-      ## variable frame interval stays exact; audio takes the sample rate.
-    width*, height*: int ## pixels; video only
-    channels*: int ## audio only
-    sampleRate*: int ## audio only, in hertz
-    configKind*: string
-      ## The four-character name of the codec configuration box inside the
-      ## sample entry — `avcC` for H.264, `hvcC` for HEVC, `av1C` for AV1,
-      ## `esds` for AAC, `alac` for Apple Lossless. Empty writes no such box,
-      ## which suits a codec that needs none.
-    config*: string
-      ## That box's payload, exactly as the encoder produced it. Never parsed
-      ## here: a parameter set is the decoder's business, and copying it
-      ## unexamined is what keeps this a muxer.
-    edits*: seq[Edit]
-      ## The track's edit list, or empty for none — which is what a track whose
-      ## media starts at zero and plays through wants, and writes no `edts` box
-      ## at all.
 
   Movie* = object
     ## Everything a probe reports about a file.

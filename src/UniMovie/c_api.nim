@@ -26,24 +26,73 @@ type MovieStatus = enum
 
 var lastError {.threadvar.}: string
 
+# A shared library runs NimMain from DllMain (Windows) or an ELF constructor;
+# a static one has neither, so nothing initializes the Nim runtime. The first
+# entry point then enters Nim code whose globals were never set up and the
+# process faults — which is what a static consumer saw on Windows. The
+# static-library tasks pass -d:staticNoAutoInit; shared builds must not, or
+# NimMain runs twice.
+when defined(staticNoAutoInit):
+  # A once primitive, not a plain flag: two threads reaching an entry point
+  # together would both see the flag unset, both call NimMain, and the second
+  # would enter Nim code the first had not finished initializing. The platform
+  # primitives block the losers until the winner returns, which a flag cannot.
+  #
+  # C statics, not Nim globals: module initialization would reset a Nim one and
+  # NimMain would run again. NimMain is declared here too — the generated
+  # prototype comes after this section.
+  {.emit: """/*VARSECTION*/
+void NimMain(void);
+#ifdef _WIN32
+#  include <windows.h>
+static INIT_ONCE umov_runtime_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK umov_runtime_init(PINIT_ONCE o, PVOID p, PVOID *c) {
+  (void)o; (void)p; (void)c; NimMain(); return TRUE;
+}
+static void umov_runtime_ensure(void) {
+  InitOnceExecuteOnce(&umov_runtime_once, umov_runtime_init, NULL, NULL);
+}
+#else
+#  include <pthread.h>
+static pthread_once_t umov_runtime_once = PTHREAD_ONCE_INIT;
+static void umov_runtime_init(void) { NimMain(); }
+static void umov_runtime_ensure(void) {
+  pthread_once(&umov_runtime_once, umov_runtime_init);
+}
+#endif
+""".}
+  template ensureRuntime() =
+    {.emit: "  umov_runtime_ensure();".}
+else:
+  template ensureRuntime() = discard
+
+
 proc umov_version(): cstring {.exportc, cdecl, dynlib, raises: [].} =
   ## Static version string; do not free.
+  ensureRuntime()
   cstring(UniMovieVersion)
 
 proc umov_last_error(): cstring {.exportc, cdecl, dynlib, raises: [].} =
   ## Most recent failure on this thread, "" when there is none.
+  ensureRuntime()
   cstring(lastError)
 
 proc umov_probe(path: cstring; trackCount, videoIndex, audioIndex: ptr cint;
                 durationSeconds: ptr cdouble; format: ptr array[16, char]): cint
     {.exportc, cdecl, dynlib, raises: [].} =
   ## Shape of a container: how many tracks, which is the first video and audio
-  ## one (-1 when absent), the playing time in seconds, and the container's own
-  ## name — "mp4", "mov", "matroska", "webm", "avi".
+  ## one (-1 when absent), the playing time in seconds, and what the container
+  ## calls itself.
+  ##
+  ## An ISO base media file reports its major brand — "isom", "mov" — where the
+  ## others report a family name: "matroska", "webm", "avi". `umov_sniff` is
+  ## the one that answers with a family name throughout, which is why the two
+  ## disagree on an MP4.
   ##
   ## `format` receives at most fifteen characters and a terminating zero, so
   ## the caller supplies sixteen bytes. Pass NULL for it when the name is not
   ## wanted; every other argument is required.
+  ensureRuntime()
   if path == nil or trackCount == nil or videoIndex == nil or
       audioIndex == nil or durationSeconds == nil:
     lastError = "every argument but format must be non-null"
@@ -71,6 +120,18 @@ proc umov_probe(path: cstring; trackCount, videoIndex, audioIndex: ptr cint;
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
 
+proc trackInRange(data: string; track: cint): bool {.raises: [].} =
+  ## Whether `track` names a track the file actually has.
+  ##
+  ## The header promises `UMOV_ERR_ARG` for an index out of range, and a
+  ## caller telling a bad argument from a bad file depends on that. Reading
+  ## the movie to find out costs one more walk, which is what every entry
+  ## point here already pays — nothing is cached between calls.
+  try:
+    track >= 0 and int(track) < probe.readMovie(data).tracks.len
+  except Exception:
+    false
+
 proc umov_track(path: cstring; index: cint; kind: ptr cint;
                 codec: ptr array[5, char]; width, height, rotation: ptr cint;
                 sampleCount, keyframeCount: ptr cint): cint
@@ -80,6 +141,7 @@ proc umov_track(path: cstring; index: cint; kind: ptr cint;
   ## caller supplies five bytes. `rotation` is clockwise **degrees** — 0, 90,
   ## 180 or 270, not an ordinal — and ffprobe counts the same matrix
   ## anticlockwise, so its 90 is this library's 270.
+  ensureRuntime()
   if path == nil or kind == nil or codec == nil or width == nil or
       height == nil or rotation == nil or sampleCount == nil or
       keyframeCount == nil:
@@ -125,6 +187,7 @@ proc umov_track_sizes(path: cstring; index: cint;
   ## sample aspect ratio. Compare a decoded frame against this pair.
   ##
   ## Zero for a track whose container does not say, and for audio.
+  ensureRuntime()
   if path == nil or codedWidth == nil or codedHeight == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -157,6 +220,7 @@ proc umov_sniff(path: cstring; format: ptr array[16, char]): cint
   ##
   ## Reads the head of the file rather than demultiplexing it, so it answers
   ## for a file this build cannot read as well as for one it can.
+  ensureRuntime()
   if path == nil or format == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -180,6 +244,7 @@ proc umov_coded_sample_count(path: cstring; track: cint; count: ptr cint): cint
   ## ISO base media reads this from a table; every other container has to be
   ## walked to find out, and so does every call — there is nothing cached
   ## between them.
+  ensureRuntime()
   if path == nil or count == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -187,7 +252,11 @@ proc umov_coded_sample_count(path: cstring; track: cint; count: ptr cint): cint
     lastError = "track index must not be negative"
     return cint(umovErrArg)
   try:
-    count[] = cint(probe.codedSampleCount(readFile($path), int(track)))
+    let data = readFile($path)
+    if not trackInRange(data, track):
+      lastError = "no such track"
+      return cint(umovErrArg)
+    count[] = cint(probe.codedSampleCount(data, int(track)))
     lastError = ""
     result = cint(umovOk)
   except MovieError as error:
@@ -212,6 +281,7 @@ proc umov_coded_sample(path: cstring; track, index: cint; buffer: ptr uint8;
   ## The bytes come back in the form the container stores — an MP4 gives
   ## length-prefixed units where a transport stream gives start codes.
   ## Converting between them is the decoder backend's business.
+  ensureRuntime()
   if path == nil or written == nil:
     lastError = "path and written must be non-null"
     return cint(umovErrArg)
@@ -219,7 +289,11 @@ proc umov_coded_sample(path: cstring; track, index: cint; buffer: ptr uint8;
     lastError = "indices must not be negative"
     return cint(umovErrArg)
   try:
-    let sample = probe.codedSample(readFile($path), int(track), int(index))
+    let data = readFile($path)
+    if not trackInRange(data, track):
+      lastError = "no such track"
+      return cint(umovErrArg)
+    let sample = probe.codedSample(data, int(track), int(index))
     written[] = csize_t(sample.len)
     if buffer == nil:
       lastError = ""
@@ -243,13 +317,15 @@ proc umov_coded_sample(path: cstring; track, index: cint; buffer: ptr uint8;
 
 proc umov_sample_timing(path: cstring; track: cint; durations,
                         compositionOffsets: ptr cint; capacity: cint;
-                        written: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
+                        written: ptr cint): cint {.exportc, cdecl, dynlib,
+                            raises: [].} =
   ## Per-sample decode duration and composition offset, in the track's own
   ## timescale. ISO base media only; another container reports zero samples.
   ##
   ## Two calls, as above: null arrays learn the count. Both arrays are filled
   ## together, since a caller rewriting a track needs both — writing samples
   ## back without their offsets puts a reordered stream out of order.
+  ensureRuntime()
   if path == nil or written == nil:
     lastError = "path and written must be non-null"
     return cint(umovErrArg)
@@ -262,6 +338,9 @@ proc umov_sample_timing(path: cstring; track: cint; durations,
       written[] = 0
       lastError = ""
       return cint(umovOk)
+    if not trackInRange(data, track):
+      lastError = "no such track"
+      return cint(umovErrArg)
     let timing = bmff.sampleTiming(data, int(track))
     written[] = cint(timing.len)
     if durations == nil or compositionOffsets == nil:
@@ -299,6 +378,7 @@ proc umov_edit_list(path: cstring; track: cint; durations,
   ##
   ## Two calls, as above. A remux that drops this plays out of sync rather than
   ## producing a malformed file.
+  ensureRuntime()
   if path == nil or written == nil:
     lastError = "path and written must be non-null"
     return cint(umovErrArg)
@@ -311,6 +391,9 @@ proc umov_edit_list(path: cstring; track: cint; durations,
       written[] = 0
       lastError = ""
       return cint(umovOk)
+    if not trackInRange(data, track):
+      lastError = "no such track"
+      return cint(umovErrArg)
     let edits = bmff.editList(data, int(track))
     written[] = cint(edits.len)
     if durations == nil or mediaTimes == nil:
@@ -413,7 +496,8 @@ proc toTrackParams(source: UmovTrackParams): TrackParams =
 
 proc umov_writer_open(path: cstring; kind: cint;
                       tracks: ptr UmovTrackParams; trackCount: cint;
-                      handle: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
+                      handle: ptr cint): cint {.exportc, cdecl, dynlib,
+                          raises: [].} =
   ## Open a writer of one of four shapes: a whole MP4, a fragmented one, a
   ## Matroska, or a WebM.
   ##
@@ -423,6 +507,7 @@ proc umov_writer_open(path: cstring; kind: cint;
   ##
   ## Nothing is encoded. The caller hands over samples some encoder already
   ## produced, which is what keeps this side of the library clear of any codec.
+  ensureRuntime()
   if path == nil or tracks == nil or handle == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -498,6 +583,7 @@ proc umov_writer_sample(handle, track: cint; data: ptr uint8; length: csize_t;
   ## passed through, or a reordered stream plays out of order.
   ##
   ## The bytes are copied before this returns.
+  ensureRuntime()
   if data == nil or length == 0:
     lastError = "a sample needs bytes"
     return cint(umovErrArg)
@@ -541,6 +627,7 @@ proc umov_writer_flush(handle: cint): cint {.exportc, cdecl, dynlib, raises: [].
   ## which lets a caller write one loop for every kind. A fragment or cluster
   ## that does not start on a keyframe cannot be played alone, so where the
   ## boundary falls is the caller's decision and not this library's.
+  ensureRuntime()
   let index = slotOf(handle)
   if index < 0:
     lastError = "no writer with that handle is open on this thread"
@@ -561,6 +648,7 @@ proc umov_writer_close(handle: cint): cint {.exportc, cdecl, dynlib, raises: [].
   ## Finish the file and release the handle. The handle is invalid afterwards
   ## whether or not this succeeded, so a failure is reported rather than left
   ## to be retried.
+  ensureRuntime()
   let index = slotOf(handle)
   if index < 0:
     lastError = "no writer with that handle is open on this thread"
@@ -591,6 +679,7 @@ proc umov_writer_counts(handle, track: cint; pending, flushed: ptr cint): cint
   ## `flushed` is fragments for a fragmented MP4 and cue points for a Matroska;
   ## a whole-file MP4 has neither and reports 0, with `pending` counting every
   ## sample written so far, since none of them has been sealed off.
+  ensureRuntime()
   let index = slotOf(handle)
   if index < 0:
     lastError = "no writer with that handle is open on this thread"
@@ -635,6 +724,7 @@ proc umov_location(path: cstring; latitude, longitude: ptr cdouble;
   ## `found` is 0 when the file carries no position, which most do not and
   ## which is not a failure. Latitude 0, longitude 0 is a real point in the
   ## Atlantic, so a caller must read `found` rather than test the numbers.
+  ensureRuntime()
   if path == nil or latitude == nil or longitude == nil or found == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -657,12 +747,14 @@ proc umov_location(path: cstring; latitude, longitude: ptr cdouble;
 
 
 proc umov_creation_date(path: cstring; unixSeconds: ptr clonglong;
-                        found: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
+                        found: ptr cint): cint {.exportc, cdecl, dynlib,
+                            raises: [].} =
   ## When a recording says it was made, as seconds since 1970.
   ##
   ## `found` is 0 where the file leaves the field unset, which a muxer with no
   ## date to write does. That is a real state, not a failure, and zero seconds is
   ## a real moment — so a caller reads `found` rather than testing the number.
+  ensureRuntime()
   if path == nil or unixSeconds == nil or found == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -681,7 +773,8 @@ proc umov_creation_date(path: cstring; unixSeconds: ptr clonglong;
     result = cint(umovErrFormat)
 
 proc umov_set_creation_date(inPath, outPath: cstring; unixSeconds: clonglong;
-                            changed: ptr cint): cint {.exportc, cdecl, dynlib, raises: [].} =
+                            changed: ptr cint): cint {.exportc, cdecl, dynlib,
+                                raises: [].} =
   ## Correct the date a wrong camera clock wrote, and report how many boxes were
   ## changed.
   ##
@@ -691,6 +784,7 @@ proc umov_set_creation_date(inPath, outPath: cstring; unixSeconds: clonglong;
   ## Refused with `UMOV_ERR_FORMAT` for a file that states the date a second time
   ## in a variable-length atom: correcting only the fixed-width headers would
   ## leave the two disagreeing, and the text one is what Apple software reads.
+  ensureRuntime()
   if inPath == nil or outPath == nil or changed == nil:
     lastError = "every argument must be non-null"
     return cint(umovErrArg)
@@ -709,3 +803,5 @@ proc umov_set_creation_date(inPath, outPath: cstring; unixSeconds: clonglong;
   except Exception:
     lastError = getCurrentExceptionMsg()
     result = cint(umovErrFormat)
+
+
