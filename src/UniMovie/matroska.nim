@@ -720,7 +720,15 @@ proc newMatroskaWriter*(path: string; tracks: openArray[TrackParams];
     let stream = openFileStream(path, fmWrite)
     if stream == nil:
       raise newException(IOError, "mkv: cannot write " & path)
-    result = newMatroskaWriter(stream, tracks, webm)
+    try:
+      result = newMatroskaWriter(stream, tracks, webm)
+    except CatchableError:
+      # The stream is open and no writer took ownership, so this is the only
+      # place it can be closed. Windows refuses to remove a file another handle
+      # still holds, turning a correctly refused track list into an undeletable
+      # file. Same shape as UniContainer's two mp4 writers.
+      stream.close()
+      raise
     result.ownsStream = true
 
 proc flushCluster*(writer: var MatroskaWriter) {.contractual.} =
