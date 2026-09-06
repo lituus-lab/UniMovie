@@ -73,6 +73,10 @@ proc expandGrouped(body: string): string =
     of ']':
       if cur.strip.len > 0:
         result &= prefix & cur.strip & ","
+      # The prefix belongs to the group that just closed. Keeping it turned the
+      # next item on the same line into std/c_api/private, which layerOfModule
+      # reads as external and skips.
+      prefix = ""
       depth = 0
       cur = ""
     of ',':

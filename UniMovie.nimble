@@ -19,7 +19,9 @@ requires "https://github.com/lituus-lab/UniMath#main"
 # code says nothing about whether its body ran. Each task writes a marker as
 # its last statement; `tools/gate.nim` removes the marker, runs the task, and
 # fails if it is not there afterwards. `nimble canary` proves the gate still
-# bites -- if that one ever passes, every other green result is worthless.
+# bites -- if `build/unigate canary` ever passes, every other green result is
+# worthless. `nimble canary` on its own proves nothing: exiting 0 on a failed
+# task is the very behaviour the gate exists to catch.
 const gateExe =
   when defined(windows): "build/unigate.exe" else: "build/unigate"
 
