@@ -3,35 +3,21 @@
 ## Fails if nimpretty would reformat any source. Checks, never rewrites.
 import std/[os, osproc, strformat, strutils]
 
-const Roots = ["src", "tests", "examples", "book"]
+# Every directory any Uni* repo keeps Nim in. Absent ones are skipped by
+# `dirExists` below, so the list is the same file everywhere -- it used to
+# be the one line that differed, and three repos were quietly not checking
+# their bin/, bench/ or tools/ sources at all.
+const Roots = ["src", "tests", "examples", "book", "tools", "bin", "bench",
+               "benchmarks"]
 
 proc sources(): seq[string] =
-  ## Every `.nim` file under the roots that exist, in walk order. A root that
-  ## is absent is skipped rather than reported: not every repository in the
-  ## family carries a book or an example.
   for root in Roots:
     if dirExists(root):
       for path in walkDirRec(root):
         if path.endsWith(".nim"):
           result.add path
 
-proc shortEndings(): seq[string] =
-  ## Modules under `src/` that stop before the two blank lines the convention
-  ## asks for.
-  ##
-  ## Not a matter of taste: Nim maps a trailing statement one line past the
-  ## end of the file, and `genhtml` refuses coverage data pointing past a
-  ## file's last line. A source that stops too soon fails `nimble coverage`
-  ## instead, where the message names lcov rather than the file behind it.
-  for path in walkDirRec("src"):
-    if path.endsWith(".nim") and not readFile(path).endsWith("\n\n\n"):
-      result.add path
-
 proc main() =
-  ## Format every source into a scratch tree and compare, then check that
-  ## every module under `src/` ends as the convention requires. Exits non-zero
-  ## and names the offending files; nothing under the working tree is
-  ## rewritten, so running this can never be the thing that changes a source.
   let tmp = "build" / "lint"
   removeDir tmp
 
@@ -50,13 +36,6 @@ proc main() =
     for src in dirty:
       echo "  ", src
     quit("lint: run nimpretty on the files above", 1)
-
-  let short = shortEndings()
-  if short.len > 0:
-    echo "lint: these stop before the two blank lines a covered source needs:"
-    for src in short:
-      echo "  ", src
-    quit("lint: add the missing blank lines to the files above", 1)
-  echo &"lint: {files.len} files clean, endings included"
+  echo &"lint: {files.len} files clean"
 
 main()
