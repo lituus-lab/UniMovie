@@ -29,17 +29,16 @@ template done(task: string) =
   mkDir "build/.gate"
   writeFile("build/.gate/" & task & ".ok", "")
 
-var gateBuilt = false
-
 proc gate(task: string): string =
-  ## `exec gate("test")` -- rebuilt once per nimble run rather than only when
-  ## missing. `build/` is ignored, so an executable from an older checkout
-  ## outlives the source it was built from and would answer for it. nimscript
-  ## has no `fileNewer` to compare them with, so the build is unconditional;
-  ## Nim's own cache makes the repeat cheap.
-  if not gateBuilt:
+  ## `exec gate("test")` -- builds the tool only when it is missing, and that is
+  ## deliberate. Every call here happens inside a task the gate binary is
+  ## already running, and Windows locks a running executable against being
+  ## overwritten: rebuilding from here fails the job outright. Freshness is
+  ## enforced where the gate is invoked instead -- CI compiles it at the start
+  ## of every job, and tools/hooks/gated.sh rebuilds it when the source is
+  ## newer.
+  if not fileExists(gateExe):
     exec "nim c --hints:off -o:" & gateExe & " tools/gate.nim"
-    gateBuilt = true
   gateExe & " " & task
 
 task canary, "Must fail: proves the gate still catches a broken build":
