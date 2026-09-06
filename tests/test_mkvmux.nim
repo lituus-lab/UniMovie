@@ -274,3 +274,19 @@ suite "the Matroska writer refuses what it cannot write":
     expect MovieError: writer.writeSample(0, [], 100)
     writer.writeSample(0, [byte 1, 2, 3], 100)
     writer.close()
+
+suite "a refused Matroska writer leaves nothing behind":
+  # The path constructor opens the file before the shared body validates the
+  # tracks. POSIX removes an open file happily, so a leaked handle only ever
+  # showed on Windows, where it makes the file undeletable.
+  test "a rejected track list still lets the file be removed":
+    let target = getTempDir() / ("unimovie-refused-mkv-" &
+                                 $getCurrentProcessId() & ".mkv")
+    removeFile target
+    expect MovieError:
+      discard newMatroskaWriter(target, [TrackParams(kind: tkVideo,
+        codec: "avc1", timescale: 1000, width: 0, height: 16)])
+    check fileExists(target)
+    removeFile target
+    check not fileExists(target)
+
