@@ -30,7 +30,7 @@ jobs:
     with:
       library: UniMovie
       module: unimovie
-      python-smoke-test: py/tests/smoke_installed.py
+      python-smoke-test: py/tests/test_smoke_installed.py
 
   all-green:
     name: All green

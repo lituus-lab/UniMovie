@@ -7,6 +7,10 @@ holds inside the repository. This copy takes them from beside itself, so CI can
 drop it and a fixture into a neutral directory and check that importing
 `unimovie` resolves to the installed wheel rather than to `py/unimovie` next
 door — a gap that would otherwise pass while the bundled library stayed behind.
+
+The name matters: pytest collects `test_*.py`, and under its previous name
+this file was collected nowhere — not by CI, not by `nimble pyTest`. Both of
+its tests had never run.
 """
 import pathlib
 

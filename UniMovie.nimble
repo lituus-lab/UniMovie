@@ -221,7 +221,8 @@ task coverage, "LCOV + HTML coverage report for the Nim sources (needs lcov)":
     exec "./build/test_cov_" & suite
     let trace = "build/lcov_" & suite & ".info"
     exec "lcov --capture --directory " & cache & " --base-directory ." &
-         " --include \"*/src/UniMovie/*\" --output-file " & trace & " --quiet"
+         " --include \"*/src/UniMovie/*\" --output-file " & trace &
+         " --quiet --ignore-errors mismatch"
     traces.add trace
   var merge = "lcov"
   for trace in traces: merge &= " --add-tracefile " & trace
